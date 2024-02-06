@@ -1,0 +1,577 @@
+---
+title: |
+  | BEAt-DKD WP3
+  | Common Component and Specific Weight Analysis
+  | RNAseq and proteomics data
+  | + IR cells
+author: "Florence Mehl"
+date: '`r format(Sys.time(), "%a %d %b %Y")`'
+output:
+  # pdf_document:
+  #   toc: yes
+  #   toc_depth: 3
+  html_document:
+    code_folding: hide
+    highlight: tango
+    theme: sandstone
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+knitr::opts_knit$set(root.dir=rprojroot::find_rstudio_root_file())
+
+library(ropls)
+library(maptools)
+library(car)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(ggrepel)
+library(readr)
+library(R.matlab)
+library(ComDim)
+library(Hmisc)
+library(tuple)
+library(circlize)
+
+options(stringsAsFactors = FALSE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+basedir <- getwd()
+outdir <- file.path(basedir,"irvoom","results")
+
+```
+
+```{r Import data}
+
+RNA.list <- list()
+Prot.list <- list()
+Exo.list <- list()
+SMD.RNA.list <- list()
+SMD.Prot.list <- list()
+SMD.list <- list()
+
+for(i in c("ABN", "GEnC", "K29", "PT34")) {
+  
+  CT <- i
+  rnadirCT <- paste0("/Users/fmehl/Documents/Beat-DKD/WP3/irvoom/Bristol", CT, "IR")
+  protdirCT <- paste0("/Users/fmehl/Documents/Beat-DKD/WP3/irvoom/Prot", CT, "IR")
+  exodirCT <- paste0("/Users/fmehl/Documents/Beat-DKD/WP3/irvoom/Exosome", CT, "IR")
+
+  outdirCT <- paste0("/Users/fmehl/Documents/Beat-DKD/WP3/irvoom/results/", CT)
+
+  # Prepare RNA data and samples metadata
+  RNA.list[[i]] <- as.data.frame(t(read.csv(file.path(rnadirCT, "voom.tsv"), sep = "\t", header = T, stringsAsFactors = F, row.names = 1)))
+  SMD.RNA.list[[i]] <- data.frame("Name"=row.names(RNA.list[[i]]), row.names = row.names(RNA.list[[i]])) %>%
+  separate(Name, c("CellLine", "IR", "Condition", "RepNb"), "_")
+  SMD.RNA.list[[i]]$IR <- ifelse(SMD.RNA.list[[i]]$IR == "", "-IR", "+IR")
+  SMD.RNA.list[[i]]$SampleName <- paste0(SMD.RNA.list[[i]]$CellLine,"_",SMD.RNA.list[[i]]$IR,"_",SMD.RNA.list[[i]]$Condition,"_",SMD.RNA.list[[i]]$RepNb)
+  rownames(RNA.list[[i]]) <- SMD.RNA.list[[i]]$SampleName
+
+    # Prepare proteomics data and samples metadata
+  Prot.list[[i]] <- as.data.frame(t(read.csv(file.path(protdirCT, "voom.tsv"), sep = "\t", header = T, stringsAsFactors = F, row.names = 1)))
+  SMD.Prot.list[[i]] <- data.frame("Name"=row.names(Prot.list[[i]]), row.names = row.names(Prot.list[[i]])) %>%
+  separate(Name, c("CellLine", "IR", "Condition", "RepNb"), "_")
+  SMD.Prot.list[[i]]$IR <- ifelse(SMD.Prot.list[[i]]$IR == "", "-IR", "+IR")
+  SMD.Prot.list[[i]]$SampleName <- paste0(SMD.Prot.list[[i]]$CellLine,"_",SMD.Prot.list[[i]]$IR,"_",SMD.Prot.list[[i]]$Condition,"_",SMD.Prot.list[[i]]$RepNb)
+  rownames(SMD.Prot.list[[i]]) <- SMD.Prot.list[[i]]$SampleName
+  rownames(Prot.list[[i]]) <- SMD.Prot.list[[i]]$SampleName
+  Prot.list[[i]] <- Prot.list[[i]][SMD.RNA.list[[i]]$SampleName,]
+  
+  SMD.list[[i]] <- SMD.RNA.list[[i]]
+  
+  Exo.list[[i]] <- read.csv(file.path(exodirCT, "voom.tsv"), sep = "\t", header = T, stringsAsFactors = F) # pourquoi plein de protéines analysées plusieurs fois??
+
+}
+
+```
+
+# ComDim by cell type
+
+```{r}
+
+data.ccswa.list <- list()
+res.ccswa.list <- list()
+group.ccswa.list <- list()
+
+for(i in c("ABN", "GEnC", "K29", "PT34")){
+  data.ccswa.list[[i]] <- as.matrix(data.frame(RNA.list[[i]], Prot.list[[i]]))
+  group.ccswa.list[[i]] <- c(dim(RNA.list[[i]])[2], dim(Prot.list[[i]])[2])
+  res.ccswa.list[[i]] <- ComDim(data.ccswa.list[[i]], group.ccswa.list[[i]], 4, scale = "sd", option = "uniform") 
+}
+
+```
+
+
+# Results by cell type with specific set of proteins
+specific proteins set for each cell type
+```{r}
+
+# Results
+##################################
+
+for(i in c("ABN", "GEnC", "K29", "PT34")) {
+  
+  CT <- i
+outdirCT.CCSWA <- paste0("/Users/fmehl/Documents/Beat-DKD/WP3/irvoom/results/", CT, "/CCSWA")
+outdirCT.COPLS <- paste0("/Users/fmehl/Documents/Beat-DKD/WP3/irvoom/results/", CT, "/ConsensusOPLS")
+
+# scores
+scoresCT <- data.frame(SMD.list[[CT]], res.ccswa.list[[CT]]$Q)
+
+# loadings
+loadingsCT <- rbind.data.frame(data.frame(res.ccswa.list[[CT]]$Block$P.b[[1]]),
+                               data.frame(res.ccswa.list[[CT]]$Block$P.b[[2]]))
+loadingsCT$dataset <- c(rep("Genes",group.ccswa.list[[i]][1]),
+                        rep("Proteins",group.ccswa.list[[i]][2]))
+loadingsCT$VarName <- rownames(loadingsCT)
+
+write.csv(loadingsCT, file= file.path(outdirCT.CCSWA, "loadings.csv"))
+
+# Scree plot and Saliences
+######################################################
+expl <- res.ccswa.list[[CT]]$explained
+rownames(expl) <- c("Genes","Proteins","Global")
+expl <- melt(expl)
+colnames(expl) <- c("Dataset", "Dimension", "R2")
+
+S <- data.frame("dataset"= c("Genes","Prot"), res.ccswa.list[[CT]]$saliences)
+S <- melt(S)
+
+screeplotCT <- ggplot(data = expl, aes(x=Dimension, y=R2, fill=Dataset)) +
+  geom_bar(stat="identity", position="dodge") +
+  theme_light() +
+  scale_fill_grey() +
+  xlab("Common component") +
+  ylab("% of explained variation") +
+  ggtitle("Scree plot")
+saliencesCT<- ggplot(data = S, aes(x = dataset, y = value, fill=dataset)) +
+  geom_bar(stat="identity", position= "dodge") +
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1, size = 12)) +
+  facet_grid(.~ variable) +
+  theme(strip.text.x = element_text(size = 12), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank()) +
+  ggtitle("Saliences")
+
+pdf(file.path(outdirCT.CCSWA, "screePlot_saliences.pdf"))
+print(screeplotCT)
+print(saliencesCT)
+dev.off()
+
+# Scores
+######################################################
+
+scores.ordered <- data.frame(Name=rownames(scoresCT[order(scoresCT$Condition,scoresCT$IR, scoresCT$CellLine),]),
+                             scoresCT[order(scoresCT$Condition,scoresCT$IR, scoresCT$CellLine),], row.names = NULL)
+scores.ordered$Sample_order <- seq(1,nrow(scores.ordered),1)
+
+pdf(file.path(outdirCT.CCSWA, "scores_by_component.pdf"))
+Dims <- colnames(scores.ordered)[7:10]
+for (i in Dims){
+  Comp.name <- i
+  scores.plot <- ggplot(data = scores.ordered, aes(x=Sample_order, y=scores.ordered[,i], fill=Condition, col=IR))+
+  geom_bar(stat = "identity") +
+  geom_bar(stat="identity", size = 1) +
+  scale_fill_grey() +
+  theme_light() +
+  xlab("Samples") +
+  ylab(as.character(Comp.name)) +
+  scale_x_continuous(breaks = scores.ordered$Sample_order, labels = scores.ordered$Name) +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=1, size=6),
+        plot.title = element_text(size = 12)) +
+  ggtitle(paste0("Scores plot ",as.character(Comp.name)))
+print(scores.plot)
+}
+dev.off()
+
+pdf(file.path(outdirCT.CCSWA, "scores_scatterplots.pdf"), height = 8, width = 12)
+
+ scores.plot.Dim1.Dim2 <- ggplot(data = scores.ordered, aes(x=Dim.1, y=Dim.2, col=IR, fill=Condition))+
+   geom_point(size = 10, stroke = 2, shape = 21) +
+   scale_fill_grey() +
+   geom_text(aes(label = RepNb), col = "black", size = 2, vjust=-2) +
+   theme_light() +
+   theme(axis.text.x=element_text(hjust=1,vjust=1, size=8),
+         plot.title = element_text(size = 12)) +
+   ggtitle(paste0("Scores plot Dim.1 vs Dim.2"))
+ print(scores.plot.Dim1.Dim2)
+ 
+ scores.plot.Dim1.Dim3 <- ggplot(data = scores.ordered, aes(x=Dim.1, y=Dim.3, col=IR, fill=Condition))+
+   geom_point(size = 10, stroke = 2, shape = 21) +
+   scale_fill_grey() +
+   geom_text(aes(label = RepNb), col = "black", size = 2, vjust=-2) +
+   theme_light() +
+   theme(axis.text.x=element_text(hjust=1,vjust=1, size=8),
+         plot.title = element_text(size = 12)) +
+   ggtitle(paste0("Scores plot Dim.1 vs Dim.3"))
+ print(scores.plot.Dim1.Dim3)
+ 
+ scores.plot.Dim1.Dim4 <- ggplot(data = scores.ordered, aes(x=Dim.1, y=Dim.4, col=IR, fill=Condition))+
+   geom_point(size = 10, stroke = 2, shape = 21) +
+   scale_fill_grey() +
+   geom_text(aes(label = RepNb), col = "black", size = 2, vjust=-2) +
+   theme_light() +
+   theme(axis.text.x=element_text(hjust=1,vjust=1, size=8),
+         plot.title = element_text(size = 12)) +
+   ggtitle(paste0("Scores plot Dim.1 vs Dim.4"))
+ print(scores.plot.Dim1.Dim4)
+ 
+ scores.plot.Dim2.Dim3 <- ggplot(data = scores.ordered, aes(x=Dim.2, y=Dim.3, col=IR, fill=Condition))+
+   geom_point(size = 10, stroke = 2, shape = 21) +
+   scale_fill_grey() +
+   geom_text(aes(label = RepNb), col = "black", size = 2, vjust=-2) +
+   theme_light() +
+   theme(axis.text.x=element_text(hjust=1,vjust=1, size=8),
+         plot.title = element_text(size = 12)) +
+   ggtitle(paste0("Scores plot Dim.2 vs Dim.3"))
+ print(scores.plot.Dim2.Dim3)
+ 
+ scores.plot.Dim2.Dim4 <- ggplot(data = scores.ordered, aes(x=Dim.2, y=Dim.4, col=IR, fill=Condition))+
+   geom_point(size = 10, stroke = 2, shape = 21) +
+   scale_fill_grey() +
+   geom_text(aes(label = RepNb), col = "black", size = 2, vjust=-2) +
+   theme_light() +
+   theme(axis.text.x=element_text(hjust=1,vjust=1, size=8),
+         plot.title = element_text(size = 12)) +
+   ggtitle(paste0("Scores plot Dim.2 vs Dim.4"))
+ print(scores.plot.Dim2.Dim4)
+ 
+ scores.plot.Dim3.Dim4 <- ggplot(data = scores.ordered, aes(x=Dim.3, y=Dim.4, col=IR, fill=Condition))+
+   geom_point(size = 10, stroke = 2, shape = 21) +
+   scale_fill_grey() +
+   geom_text(aes(label = RepNb), col = "black", size = 2, vjust=-2) +
+   theme_light() +
+   theme(axis.text.x=element_text(hjust=1,vjust=1, size=8),
+         plot.title = element_text(size = 12)) +
+   ggtitle(paste0("Scores plot Dim.3 vs Dim.4"))
+ print(scores.plot.Dim3.Dim4)
+ 
+dev.off()
+
+# Export data for Consensus OPLS-DA
+######################################################
+
+Y  <- data.frame("Basal"=ifelse(SMD.list[[CT]]$Condition == "Basal",1, 0),
+                "InsulinResistant"=ifelse(SMD.list[[CT]]$Condition == "InsulinResistant",1, 0))
+writeMat(file.path(outdirCT.COPLS,"Genes.mat"), Genes.mat = as.matrix(RNA.list[[CT]]))
+writeMat(file.path(outdirCT.COPLS,"Proteins.mat"), Proteins.mat = as.matrix(Prot.list[[CT]]))
+
+writeMat(file.path(outdirCT.COPLS,"Y.mat"), Y = as.matrix(Y))
+writeMat(file.path(outdirCT.COPLS,"ObsNames.mat"), ObsNames = as.character(SMD.list[[CT]]$SampleName))
+
+writeMat(file.path(outdirCT.COPLS,"Genes_varNames.mat"), Genes_varNames = colnames(RNA.list[[CT]]))
+writeMat(file.path(outdirCT.COPLS,"Proteins_varNames.mat"), Proteins_varNames = colnames(Prot.list[[CT]]))
+
+}
+
+```
+
+# Consensus OPLS - specific proteins sets
+```{r}
+mapping <- read.table("genes.id.3.6.0.txt", sep="\t", header = T)
+mapping.genes <- mapping[!duplicated(mapping$ensembl),-4]
+
+Desc <- list()
+Perm <- list()
+BlocksContrib <- list()
+SupScores <- list()
+SupLoadings.genes <- list()
+SupLoadings.proteins <- list()
+SupAllLoadings.genes <- c()
+SupAllLoadings.proteins <- data.frame()
+
+for(i in c("ABN", "GEnC", "K29", "PT34")) {
+  
+  CT <- i
+  outdirCT <- paste0("/Users/fmehl/Documents/Beat-DKD/WP3/irvoom/results/", CT, "/ConsensusOPLS")
+
+ResultsFilesList <- list.files(path = outdirCT, pattern="*.csv")
+ResultsFilesList <- paste0(outdirCT, "/", ResultsFilesList)
+ResultsFiles <- sapply(ResultsFilesList, function(x) read.csv(x, header = FALSE))
+names(ResultsFiles) <- gsub(paste0(outdirCT, "/") , "", names(ResultsFiles), fixed = T)
+names(ResultsFiles) <- gsub(".csv" , "", names(ResultsFiles))
+
+# model metrics
+Desc[[i]] <- ResultsFiles$Desc
+names(Desc[[i]]) <- c("R2Xcum", "R2Ycum", "Q2cum")
+rownames(Desc[[i]]) <- c("predictive", "orthogonal")
+
+# permutation test
+Perm[[i]] <- data.frame("perm.nb" = seq(1,nrow(ResultsFiles$PermQ2),1), "Q2val"=ResultsFiles$PermQ2)
+names(Perm[[i]]) <- c("perm.nb", "Q2val")
+
+# saliences
+BlocksContrib[[i]] <- data.frame("dataset"=c("Genes", "Proteins"), ResultsFiles$BlocksContributions, stringsAsFactors = FALSE)
+names(BlocksContrib[[i]]) <- c("dataset", "predictive", "orthogonal")
+BlocksContrib[[i]] <- melt(BlocksContrib[[i]])
+
+# scores
+names(ResultsFiles$scores) <- c("predictive", "orthogonal")
+SupScores[[i]] <- data.frame(SMD.list[[i]],ResultsFiles$scores)
+
+# loadings genes
+SupLoadings.genes[[i]] <- data.frame(ResultsFiles$loadings_genes)
+colnames(SupLoadings.genes[[i]]) <- c("predictive", "VIP")
+SupLoadings.genes[[i]]$ensembl <- colnames(RNA.list[[i]])
+SupLoadings.genes[[i]] <- merge.data.frame(SupLoadings.genes[[i]], mapping.genes, by = "ensembl", all.x = T, sort = F)
+SupLoadings.genes[[i]]$VIPxLoadingsSign <- ifelse(SupLoadings.genes[[i]]$predictive > 0, SupLoadings.genes[[i]]$VIP, -(SupLoadings.genes[[i]]$VIP))
+SupLoadings.genes[[i]]$dataset <- rep("Genes", nrow(SupLoadings.genes[[i]]))
+SupLoadings.genes[[i]]$cellType <- i
+
+# loadings proteins
+SupLoadings.proteins[[i]] <- data.frame(ResultsFiles$loadings_proteins)
+colnames(SupLoadings.proteins[[i]]) <- c("predictive", "VIP")
+SupLoadings.proteins[[i]]$uniprot <- colnames(Prot.list[[i]])
+SupLoadings.proteins[[i]] <- merge.data.frame(SupLoadings.proteins[[i]], mapping, by = "uniprot", all.x = T, sort = F)
+SupLoadings.proteins[[i]]$VIPxLoadingsSign <- ifelse(SupLoadings.proteins[[i]]$predictive > 0, SupLoadings.proteins[[i]]$VIP, -(SupLoadings.proteins[[i]]$VIP))
+SupLoadings.proteins[[i]]$dataset <- rep("Proteins", nrow(SupLoadings.proteins[[i]]))
+SupLoadings.proteins[[i]]$cellType <- i
+
+# genes loadings table of results
+SupAllLoadings.genes <- c(SupAllLoadings.genes, SupLoadings.genes[[i]]$ensembl)
+
+# proteins loadings table of results
+SupAllLoadings.proteins <- rbind(SupAllLoadings.proteins, SupLoadings.proteins[[i]][,c("uniprot","ensembl","entrez","symbol", "name", "dataset")])
+
+# scores plot
+scores.plot.T.To <- ggplot(data = SupScores[[i]], aes(x=predictive, y=orthogonal, col=Condition))+
+  geom_point(size = 6) +
+  theme_light() +
+  scale_fill_grey() +
+  ggtitle(paste0("Scores plot T vs To"))
+
+pdf(file.path(outdirCT, "scoresPlot.pdf"))
+print(scores.plot.T.To)
+dev.off()
+
+
+}
+
+# all Descriptive metrics
+allDesc <- data.frame(cellType=c("ABN", "GEnC", "K29", "PT34"),
+                      R2X=NA,
+                      R2Y=NA,
+                      R2Xpred=NA,
+                      Q2=NA)
+for(i in c("ABN", "GEnC", "K29", "PT34")){
+  allDesc[allDesc$cellType==i, "R2Xpred"] <- Desc[[i]]$R2Xcum[1]
+  allDesc[allDesc$cellType==i, "R2Xcum"] <- Desc[[i]]$R2Xcum[2]
+  allDesc[allDesc$cellType==i, "R2Ycum"] <- Desc[[i]]$R2Ycum[2]
+  allDesc[allDesc$cellType==i, "Q2cum"] <- Desc[[i]]$Q2cum[2]
+}
+allDesc <- melt(allDesc)
+plotDesc <- ggplot(allDesc, aes(variable, value, fill=cellType)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  theme_light()
+pdf(file.path(outdir, "ConsensusOPLS_metrics.pdf"))
+plotDesc
+dev.off()
+
+# blocks contributions
+allBlocksContrib <- data.frame(cellType=c("ABN", "GEnC", "K29", "PT34"),
+                      proteins.pred=NA,
+                      genes.pred=NA)
+for(i in c("ABN", "GEnC", "K29", "PT34")){
+  allBlocksContrib[allBlocksContrib$cellType == i, "genes.pred"] <- BlocksContrib[[i]][1,3]
+  allBlocksContrib[allBlocksContrib$cellType == i, "proteins.pred"] <- BlocksContrib[[i]][2,3]
+}
+allBlocksContrib <- melt(allBlocksContrib)
+plotBlocksContrib <- ggplot(allBlocksContrib, aes(variable, value, fill=cellType)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  theme_light()
+pdf(file.path(outdir, "ConsensusOPLS_BlocksContributions.pdf"))
+plotBlocksContrib
+dev.off()
+
+# loadings table of results genes
+SupAllLoadings.genes.df <-  Reduce(function(dtf1, dtf2) merge(dtf1, dtf2, by = c("ensembl", "entrez","symbol", "name", "dataset")),SupLoadings.genes)
+names(SupAllLoadings.genes.df) <- c("ensembl", "entrez", "symbol", "name", "dataset", 
+                                    "predictive.ABN", "VIP.ABN", "VIPxLoadingsSign.ABN", "cellType.ABN", 
+                                    "predictive.GEnC", "VIP.GEnC", "VIPxLoadingsSign.GEnC", "cellType.GEnC", 
+                                    "predictive.K29", "VIP.K29", "VIPxLoadingsSign.K29", "cellType.K29", 
+                                    "predictive.PT34", "VIP.PT34", "VIPxLoadingsSign.PT34", "cellType.PT34")
+write.csv(SupAllLoadings.genes.df[,-4], file = file.path(outdir,"ConsensusOPLS_Loadings_genes.csv"), row.names = F, na = "")
+
+
+# loadings table of results proteins
+SupAllLoadings.proteins.uniprot <- unique(SupAllLoadings.proteins$uniprot)
+SupLoadings.proteins$all <- SupAllLoadings.proteins[!duplicated(SupAllLoadings.proteins$uniprot),]
+SupLoadings.proteins <- SupLoadings.proteins[c("all","ABN","GEnC","K29" ,"PT34")]
+SupAllLoadings.proteins.df <-  Reduce(function(dtf1, dtf2) merge(dtf1, dtf2, by = c("uniprot","ensembl","entrez","symbol", "name", "dataset"), all.x=T), SupLoadings.proteins)
+names(SupAllLoadings.proteins.df) <- c("uniprot", "ensembl", "entrez", "symbol", "name", "dataset",
+                                       "predictive.ABN", "VIP.ABN", "VIPxLoadingsSign.ABN", "cellType.ABN",
+                                       "predictive.GEnC", "VIP.GEnC", "VIPxLoadingsSign.GEnC", "cellType.GEnC",
+                                       "predictive.K29", "VIP.K29", "VIPxLoadingsSign.K29", "cellType.K29",
+                                       "predictive.PT34", "VIP.PT34", "VIPxLoadingsSign.PT34", "cellType.PT34")
+
+write.csv(SupAllLoadings.proteins.df[,-5], file = file.path(outdir,"ConsensusOPLS_Loadings_proteins.csv"), row.names = F, na = "")
+
+```
+
+# Consensus OPLS - loadings description
+```{r}
+
+# kendall test to compare rankings
+##############################################
+# genes
+kendall.df <- SupAllLoadings.genes.df[order(SupAllLoadings.genes.df$predictive.ABN),]
+kendall.ABNvsGEnC <- cor.test(kendall.df$predictive.ABN, kendall.df$predictive.GEnC, method = "kendall")
+kendall.ABNvsK29 <- cor.test(kendall.df$predictive.ABN, kendall.df$predictive.K29, method = "kendall")
+kendall.ABNvsPT34 <- cor.test(kendall.df$predictive.ABN, kendall.df$predictive.PT34, method = "kendall")
+kendall.df <- SupAllLoadings.genes.df[order(SupAllLoadings.genes.df$predictive.K29),]
+kendall.K29vsGEnC <- cor.test(kendall.df$predictive.K29, kendall.df$predictive.GEnC, method = "kendall")
+kendall.K29vsPT34 <- cor.test(kendall.df$predictive.K29, kendall.df$predictive.GEnC, method = "kendall")
+kendall.df <- SupAllLoadings.genes.df[order(SupAllLoadings.genes.df$predictive.GEnC),]
+kendall.GEnCvsPT34 <- cor.test(kendall.df$predictive.GEnC, kendall.df$predictive.PT34, method = "kendall")
+
+kendall.df <- SupAllLoadings.genes.df[order(SupAllLoadings.genes.df$predictive.ABN),]
+cor.kendall.ABNvsGEnC <- cor(kendall.df$predictive.ABN, kendall.df$predictive.GEnC, method = "kendall")
+cor.kendall.ABNvsK29 <- cor(kendall.df$predictive.ABN, kendall.df$predictive.K29, method = "kendall")
+cor.kendall.ABNvsPT34 <- cor(kendall.df$predictive.ABN, kendall.df$predictive.PT34, method = "kendall")
+kendall.df <- SupAllLoadings.genes.df[order(SupAllLoadings.genes.df$predictive.K29),]
+cor.kendall.K29vsGEnC <- cor(kendall.df$predictive.K29, kendall.df$predictive.GEnC, method = "kendall")
+cor.kendall.K29vsPT34 <- cor(kendall.df$predictive.K29, kendall.df$predictive.GEnC, method = "kendall")
+kendall.df <- SupAllLoadings.genes.df[order(SupAllLoadings.genes.df$predictive.GEnC),]
+cor.kendall.GEnCvsPT34 <- cor(kendall.df$predictive.GEnC, kendall.df$predictive.PT34, method = "kendall")
+
+kendall.results <- data.frame(cellTypeA=c("ABN","ABN","ABN","K29","K29","GEnC","GEnC","K29","PT34","GEnC","PT34","PT34"),
+                              cellTypeB=c("GEnC","K29","PT34","GEnC","PT34","PT34","ABN","ABN","ABN","K29","K29","GEnC"),
+                         cor = c(cor.kendall.ABNvsGEnC,
+                         cor.kendall.ABNvsK29,
+                         cor.kendall.ABNvsPT34,
+                         cor.kendall.K29vsGEnC,
+                         cor.kendall.K29vsPT34,
+                         cor.kendall.GEnCvsPT34,
+                         cor.kendall.ABNvsGEnC,
+                         cor.kendall.ABNvsK29,
+                         cor.kendall.ABNvsPT34,
+                         cor.kendall.K29vsGEnC,
+                         cor.kendall.K29vsPT34,
+                         cor.kendall.GEnCvsPT34),
+                         sig = c(kendall.ABNvsGEnC$p.value,
+                         kendall.ABNvsK29$p.value,
+                         kendall.ABNvsPT34$p.value,
+                         kendall.K29vsGEnC$p.value,
+                         kendall.K29vsPT34$p.value,
+                         kendall.GEnCvsPT34$p.value,
+                         kendall.ABNvsGEnC$p.value,
+                         kendall.ABNvsK29$p.value,
+                         kendall.ABNvsPT34$p.value,
+                         kendall.K29vsGEnC$p.value,
+                         kendall.K29vsPT34$p.value,
+                         kendall.GEnCvsPT34$p.value))
+kendall.results.cormat <- dcast(kendall.results[,-4], cellTypeA ~ cellTypeB)
+row.names(kendall.results.cormat) <- kendall.results.cormat$cellTypeA
+kendall.results.cormat <- as.matrix(kendall.results.cormat[,-1])
+
+kendall.results.sigmat <- dcast(kendall.results[,-3], cellTypeA ~ cellTypeB)
+row.names(kendall.results.sigmat) <- kendall.results.sigmat$cellTypeA
+kendall.results.sigmat <- as.matrix(kendall.results.sigmat[,-1])
+
+write.csv(kendall.results[1:6,], file=file.path(outdir, "kendall_corr.csv"), row.names = F)
+
+library(viridis)
+library(corrplot)
+library(RColorBrewer)
+pdf(file.path(outdir, "kendall_corr.pdf"))
+corrplot(kendall.results.cormat,
+         p.mat = kendall.results.sigmat,
+         insig = "label_sig",
+         sig.level = c(.001, .01, .05), pch.cex = .9, pch.col = "black",
+         na.label = .,
+         method = "circle",
+         type = "upper",
+         tl.col = "black", tl.srt = 0,
+         col= colorRampPalette(c("white","red"))(12),
+         is.corr=FALSE)
+dev.off()
+
+
+ggplot(kendall.df, aes(x=predictive.ABN, y=predictive.K29, col=VIP.ABN)) +
+  geom_point(size=0.5) +
+  scale_color_viridis() +
+  theme_light()
+
+# counts
+####################
+
+SupLoadings.counts <- data.frame(cellType=c("ABN", "GEnC", "K29", "PT34"),
+                                 proteins.top.pos = NA,
+                                 proteins.top.neg = NA,
+                                 genes.top.pos = NA,
+                                 genes.top.neg=NA)
+
+# A refaire avec VIP et loadings normalisés?
+for(i in c("ABN", "GEnC", "K29", "PT34")){
+  SupLoadings.counts[SupLoadings.counts$cellType == i,"proteins.top.pos"] <- sum(SupLoadings.proteins[[i]]$VIP>0.75*max(SupLoadings.proteins[[i]]$VIP) & SupLoadings.proteins[[i]]$predictive>0.75*max(SupLoadings.proteins[[i]]$predictive))
+  SupLoadings.counts[SupLoadings.counts$cellType == i,"proteins.top.neg"] <- sum(SupLoadings.proteins[[i]]$VIP>0.75*max(SupLoadings.proteins[[i]]$VIP) & SupLoadings.proteins[[i]]$predictive< 0.75*min(SupLoadings.proteins[[i]]$predictive))
+  SupLoadings.counts[SupLoadings.counts$cellType == i,"genes.top.pos"] <- sum(SupLoadings.genes[[i]]$VIP>0.75*max(SupLoadings.genes[[i]]$VIP) & SupLoadings.genes[[i]]$predictive>0.75*max(SupLoadings.genes[[i]]$predictive))
+  SupLoadings.counts[SupLoadings.counts$cellType == i,"genes.top.neg"] <- sum(SupLoadings.genes[[i]]$VIP>0.75*max(SupLoadings.genes[[i]]$VIP) & SupLoadings.genes[[i]]$predictive< 0.75*min(SupLoadings.genes[[i]]$predictive))
+}
+SupLoadings.counts$proteins.top.neg <- -SupLoadings.counts$proteins.top.neg
+SupLoadings.counts$genes.top.neg <- -SupLoadings.counts$genes.top.neg
+
+SupLoadings.counts.pos <- melt(SupLoadings.counts[,c(1,2,4)])
+SupLoadings.counts.pos$variable <- gsub(".top.pos","",SupLoadings.counts.pos$variable)
+SupLoadings.counts.neg <- melt(SupLoadings.counts[,c(1,3,5)])
+SupLoadings.counts.neg$variable <- gsub(".top.neg","",SupLoadings.counts.pos$variable)
+
+pdf(file.path(outdir, "TopLoadingsCounts.pdf"))
+ggplot() +
+  geom_bar(data=SupLoadings.counts.pos, aes(x=variable, y=value, fill=cellType), stat="identity", position=position_dodge(), width = 0.25) +
+  geom_bar(data=SupLoadings.counts.neg, aes(x=variable, y=value, fill=cellType), stat="identity", position=position_dodge(), width = 0.25) +
+  theme_light() +
+  coord_flip() +
+  geom_hline(yintercept = 0, color = "white", size=1) +
+  ggtitle("Top variables selected VIP > 0.75(max(VIP)) \n & loadings > 0.75(abs(max(loadings))") +
+  labs(y="Number of variables")
+dev.off()
+
+
+
+# proteins WARNING: VIP and predictive are normalised to 1 : x/max(x) for each
+############################################################################################
+
+SupAllLoadings.proteins.long <- SupAllLoadings.proteins.df[,c("uniprot","ensembl","VIP.ABN","VIP.GEnC","VIP.K29","VIP.PT34")]
+SupAllLoadings.proteins.long$VIP.ABN <- SupAllLoadings.proteins.long$VIP.ABN / max(SupAllLoadings.proteins.long$VIP.ABN, na.rm = T)
+SupAllLoadings.proteins.long$VIP.GEnC <- SupAllLoadings.proteins.long$VIP.GEnC / max(SupAllLoadings.proteins.long$VIP.GEnC, na.rm = T)
+SupAllLoadings.proteins.long$VIP.K29 <- SupAllLoadings.proteins.long$VIP.K29 / max(SupAllLoadings.proteins.long$VIP.K29, na.rm = T)
+SupAllLoadings.proteins.long$VIP.PT34 <- SupAllLoadings.proteins.long$VIP.PT34 / max(SupAllLoadings.proteins.long$VIP.PT34, na.rm = T)
+SupAllLoadings.proteins.long <- melt(SupAllLoadings.proteins.long)
+SupAllLoadings.proteins.long$variable <- gsub("VIP.","",SupAllLoadings.proteins.long$variable)
+names(SupAllLoadings.proteins.long) <- c("uniprot","ensembl","cellType","VIP")
+
+pred.prot.long <-SupAllLoadings.proteins.df[,c("uniprot","ensembl","predictive.ABN","predictive.GEnC","predictive.K29","predictive.PT34")]
+pred.prot.long$predictive.ABN <- pred.prot.long$predictive.ABN / max(pred.prot.long$predictive.ABN, na.rm = T)
+pred.prot.long$predictive.GEnC <- pred.prot.long$predictive.GEnC / max(pred.prot.long$predictive.GEnC, na.rm = T)
+pred.prot.long$predictive.K29 <- pred.prot.long$predictive.K29 / max(pred.prot.long$predictive.K29, na.rm = T)
+pred.prot.long$predictive.PT34 <- pred.prot.long$predictive.PT34 / max(pred.prot.long$predictive.PT34, na.rm = T)
+pred.prot.long <- melt(pred.prot.long)
+pred.prot.long$variable <- gsub("predictive.","",pred.prot.long$variable)
+names(pred.prot.long) <- c("uniprot","ensembl","cellType","predictive")
+
+SupAllLoadings.proteins.long <- merge(SupAllLoadings.proteins.long, pred.prot.long, by=c("uniprot","ensembl","cellType"))
+rm(pred.prot.long)
+SupAllLoadings.proteins.long$VIP[is.na(SupAllLoadings.proteins.long$VIP)] <- 0
+SupAllLoadings.proteins.long$predictive[is.na(SupAllLoadings.proteins.long$predictive)] <- 0
+SupAllLoadings.proteins.long <- SupAllLoadings.proteins.long[order(c(SupAllLoadings.proteins.long$VIP, SupAllLoadings.proteins.long$uniprot), decreasing = T),]
+SupAllLoadings.proteins.long$VIPsorted <- seq(1,nrow(SupAllLoadings.proteins.long))
+
+
+
+```
+
+
+
+
+idées:
+      - heatmap des loadings (lignes= genes ou proteines, colonne = cell type) attention à mettre un z-score
+      - faire WGCNA sur genes et proteines et faire les modèles avec ça en entrée au lieu des prot et genes
+
+
+

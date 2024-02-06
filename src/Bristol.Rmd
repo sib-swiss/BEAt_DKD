@@ -1,0 +1,1873 @@
+---
+title: "BEAt-DKD omics data analysis"
+author: "Van Du T. Tran"
+date: "`r Sys.Date()`"
+
+header-includes:
+- \usepackage{pdflscape}
+- \usepackage{float}
+- \usepackage{booktabs}
+- \usepackage{array}
+- \usepackage{longtable}
+output:	pdf_document
+toc: yes
+---
+
+---
+# module add Development/java/1.8.0_192; nohup Rscript -e 'library(rmarkdown); library(knitr); PROJECT <- "BEAt_DKD"; OUT <- "Endothelial"; OMICS <- "RNAseq"; CELL <- "HMEC"; IR <- ""; FORCE <- FALSE; CONTRASTFILE <- paste0(OUT, "_contrasts.cfg"); DESIGNFILE <- paste0(OUT, "_design.cfg"); COUNTFILE <- ifelse(OMICS=="Prot", paste0("../data/clean/proteomics/", ifelse(OUT=="Endothelial", ifelse(CELL=="GEnC", "Bristol", "Lund"), OUT), "/Scaled.tsv"), NA); ADJUSTALL <- TRUE; FDR <- 0.05; LOGFC <- 1; GENEANNOTFILE <- ifelse(OMICS=="Prot", NA, NA); GENESUB <- ifelse(OMICS!="RNAseq", "all", "all"); render("~/devel/RNAseq_analysis/limma.Rmd", output_dir=paste0("output/", OUT, "/", OMICS, CELL, IR, "/"), output_file="report.pdf", clean=T);'#protein_coding
+#HMEC+ECFCold: data=120118
+---
+
+```{r global_options, include=FALSE}
+DIR <- paste0("/scratch/local/permanent/ttran/", PROJECT, "/limma/")
+OUTDIR <- paste0(DIR, 'output/', OUT, '/', OMICS, CELL, IR, '/')
+dir.create(OUTDIR, recursive=T)
+opts_knit$set(
+    root.dir = DIR,
+    keep.tex = TRUE
+    );
+opts_chunk$set(
+    fig.width  = 9,
+    fig.height = 9,
+    fig.path   = OUTDIR,
+    fig.align  = 'center',
+    fig.pos    = 'h',
+    fig.show   = 'hold',
+    echo       = FALSE,
+    warning    = FALSE,
+    message    = FALSE,
+    cache      = FALSE
+    );
+LIBRARIES <- c("limma", "edgeR", "WGCNA", "topGO", "DOSE", "clusterProfiler", "car",
+               "org.Hs.eg.db", "EnsDb.Hsapiens.v86", "ensembldb",
+               "gplots", "ggplot2", "reshape2", "gtable", "ggpubr", "enrichplot", "gridExtra",
+               "ComplexHeatmap", "circlize", "cowplot", "singscore",
+               "stringr", "kableExtra", "gtools",
+               "assertthat", "parallel"
+               )
+invisible(sapply(LIBRARIES, function(lib) {
+    suppressPackageStartupMessages(library(lib, character.only = TRUE))
+}))
+options(stringsAsFactors=FALSE)
+options(digits=3)
+suppressMessages(enableWGCNAThreads())
+```
+
+```{r config, include=TRUE}
+mc.cores   <- detectCores()
+## Note: contrasts in study: p-values will be corrected based on the given contrasts,
+##       and thus, can be different if different contrasts are given
+## GENESUB: subset of genes for analysis
+HEADER     <- 0                          # 1 if there is header in count files, 0 otherwise
+BATCH      <- 1                          # 1 to show correlation of batches, 0 otherwise
+GENELENGTH <- "length.txt"               # gene exonic length
+TSCANNOT   <- "transcripts.txt"          # transcript annotation file
+GENEFIL    <- "gene.filter.txt"          # status of filtered genes
+GENEID     <- "genes.id.txt"             # gene id mapping
+BIOTYPES   <- c(Prot="proteins", RNAseq="genes", miRNAseq="miRNAs")
+GMTFILES   <- c(# HALLMARK="h.all.v7.1.symbols.gmt",
+                GO_BP="c5.bp.v7.1.symbols.gmt",
+                GO_CC="c5.cc.v7.1.symbols.gmt",
+                GO_MF="c5.mf.v7.1.symbols.gmt"
+                # KEGG="c2.cp.kegg.v7.1.symbols.gmt",
+                # REACTOME="c2.cp.reactome.v7.1.symbols.gmt",
+                # PID="c2.cp.pid.v7.1.symbols.gmt",
+                # BIOCARTA="c2.cp.biocarta.v7.1.symbols.gmt",
+                # CGP="c2.cgp.v7.1.symbols.gmt",
+                # IMMUNO="c7.all.v7.1.symbols.gmt"
+)
+
+# CLUSTERPROT  <- "9606.clusters.proteins.v11.0.txt"  # STRINGdb protein cluster
+# CLUSTERANNO  <- "9606.clusters.info.v11.0.txt"      # STRINGdb protein cluster annotation
+# CLUSTERRELT  <- "9606.clusters.tree.v11.0.txt"      # STRINGdb protein cluster relation
+# ENTREZSTRING <- "human.entrez_2_string.2018.tsv"    # entrez - string mapping
+# SYMBOLSTRING <- "human.name_2_string.tsv"           # symbol - string mapping
+# CPM        <- if (PROJECT=="BETADIAMARK") 5 else
+#     if (OUT %in% c("Helsinki", "Helsinki_Basal")) { 
+#         if (OMICS=="Prot") 1 else 
+#             if (OMICS=="miRNAseq") 1 else 
+#                 32
+#     } else 1 # threshold of cpm in at least one library
+CPM        <- 1  # threshold of cpm in at least one library
+RPKM       <- 0  # -1: input counts are rpkm, 1: rpkm counts to calculate, 0: otherwise
+COMBAT     <- 0  # 1 to use combat for batch effect, 0 otherwise
+OUT_boxplotCountsName <- "boxplotCounts" # suffix of boxplot file
+OUT_densityPlotName   <- "densityPlot"   # suffix of density plot file
+OUT_barplotTCName     <- "barplotTC"     # suffix of total count barplot file
+OUT_histoPName        <- "histoP"        # suffix of raw p-value histogram file
+OUT_MAplotDEName      <- "MAplotDE"      # suffix of MAplot file
+#OUT_VennDiagramName   <- "VennDiagram"   # suffix of Venn diagram file
+OUT_completeName      <- "complete"      # suffix of gene expression file
+ADJUST.METHOD  <- "BH"
+NORM.METHOD    <- "voom"
+GO.WORLD       <- paste0(OUT, "_GO.list")
+ONTOLOGY       <- "ALL"
+MINSIG         <- 3
+OUTFILE        <- FALSE   # figures in rmarkdown if FALSE, figures in separate pdf's if TRUE
+IDE.DESIGN     <- TRUE    # consider differential interaction if TRUE
+BATCH.DESIGN   <- (OUT %in% c('Prot_NA_as_0', 'Endothelial')) && (OMICS %in% c('RNAseq'))   # correct batch effect with limma if TRUE
+DIST.METHOD    <- "euclidean"            # type of distance 
+HCLUST.METHOD  <- "ward.D"               # method of hierarchical clustering
+DEEPSPLIT      <- 2
+MINCLUSTERSIZE <- 10
+WEBSAFECOLORS  <- labels2colors(1:340)
+HSV.SDELTA     <- 0.7
+ENSEMBL        <- TRUE
+LOGFC          <- as.numeric(LOGFC)
+FDR            <- as.numeric(FDR)
+CPM            <- as.numeric(CPM)
+P.LIM          <- 0.01
+Q.LIM          <- 0.05
+source("~/devel/RNAseq_analysis/limma_func.R")
+```
+   
+# Experimental design
+`r if (OUT %in% c("Bristol", "Prot", "Exosome")) {"
+  - ABN: Podocytes, K29: Mesangial cells, PT34: Proximal Tubular cells, GEnC: Glomerular Endothelial cells.
+"} else if (OUT=="Endothelial") {"
+  - GEnC: Glomerular Endothelial cells, HMEC: Human Microvascular Endothelial cells, ECFC: Endothelial Colony Forming cells.
+  - InsulinResistant denotes both Insulin Resistant and Diabetic Soup. Basal denotes both Basal and Ctrl conditions.
+"} else if (OUT=="Lund") {"
+  - HMEC: Human Microvascular Endothelial cells, ECFC: Endothelial Colony Forming cells.
+  - InsulinResistant denotes both Insulin Resistant and Diabetic Soup. Basal denotes both Basal and Ctrl conditions.
+"}
+`
+		 
+```{r setup, eval=TRUE}
+##- load experimental design file ----
+exp.design <- loadExpDesign(DESIGNFILE)
+if (CELL %in% unique(exp.design$cell)) {
+    exp.design <- exp.design[exp.design$cell==CELL, , drop=F]
+} else if (grepl(paste(unique(exp.design$cell), collapse="|"), CELL) && grepl("no_", CELL)) {
+    exp.design <- exp.design[exp.design$cell!=sub(CELL, pattern="no_", replacement=""), , drop=F]
+}
+if (IR %in% unique(exp.design$ir)) {
+    exp.design <- exp.design[exp.design$ir==IR, , drop=F]
+}
+
+## load count data
+loadedData <- loadCountData(exp.design, file=COUNTFILE, 
+                            header.pattern='InsulinResistant', 
+                            header.replacement=ifelse(OUT=="Endothelial", "DiabeticSoup", 'InsulinResistant'))
+exp.design <- loadedData$exp.design
+
+for (varname in colnames(exp.design)) {
+    assign(varname, factor(exp.design[, varname], levels=sort(unique(exp.design[, varname]))))
+}
+conds    <- levels(cond)
+biolreps <- individual # NULL
+if (! "run" %in% colnames(exp.design)) {
+    ## exp.design$run <- ""
+    ## cond.num <- table(cond)
+    ## for (x in names(cond.num)) {
+    ##     exp.design[exp.design$cond %in% x, "run"] <- paste(x, 1:cond.num[x], sep='_')
+    ## }
+    if ("date" %in% colnames(exp.design)) {
+        exp.design$run <- paste(exp.design$cond, exp.design$date, sep='_')
+        cond.num <- table(exp.design[is.na(exp.design$date) | exp.design$date=="", "cond"])
+        for (x in names(cond.num)) {
+            x.date <- sort(setdiff(na.omit(exp.design[exp.design$cond %in% x, "date"]), ""), decreasing=F)
+            exp.design[exp.design$cond %in% x & ! exp.design$date %in% x.date, "run"] <- paste(x, paste0(x.date[length(x.date)], 1:cond.num[x]), sep='_')
+        }
+    } else {
+        exp.design$run <- exp.design$sample
+    }
+}
+# if (!is.na(COUNTFILE)) {
+    # rownames(exp.design) <- exp.design$run
+    # exp.design$sample    <- exp.design$run
+# }
+##-----
+
+kable(do.call(rbind, setNames(mclapply(conds, mc.cores=length(conds), function(cnd) {
+    c(Condition=cnd,
+      "#Rep"=length(exp.design[exp.design$cond==cnd, 'sample']),
+      Samples=paste(exp.design[exp.design$cond==cnd, 'sample'], collapse=','))
+}), conds)), row.names=F) %>% kable_styling(font_size=8, latex_options=c("repeat_header"))
+	
+##- load annotation ----
+## GENEANNOT: GFF
+#gene.annot <- read.table(GENEANNOT, header=F, sep="\t", quote="\"", comment.char="")
+#gene.annot9 <- strsplit(as.character(gene.annot[,9]),";")
+#gene.annot.id <- unlist(lapply(gene.annot9, function(x) {return (x[1])}))
+##gene.annot9 <- matrix(unlist(strsplit(as.character(gene.annot[,9]),";")),ncol=5, byrow=T)
+##rownames(gene.annot) <- sapply(gene.annot9[,1], gsub, pattern="ID=", replacement="")
+
+if (is.na(GENEANNOTFILE)) {
+    gene.annot <- data.frame(ID=rownames(loadedData$counts), 
+                             Name=rownames(loadedData$counts),
+                             row.names=rownames(loadedData$counts))
+} else {
+    ## GENEANNOT: tab-delimited file of gene sizes
+    #gene.annot <- as.matrix(read.table(GENEANNOT, header=TRUE, sep="\t", quote="\"", comment.char=""))
+    gene.annot <- read.table(GENEANNOTFILE, header=FALSE, sep="\t", quote="", comment.char="")
+    colnames(gene.annot)[1] <- "ID"
+    colnames(gene.annot)[2] <- "Name"
+    rownames(gene.annot) <- if (OUT %in% c("Helsinki", "Helsinki_Basal")) sub(gene.annot$ID, pattern='\\.[0-9]+$', replacement='') else gene.annot$ID
+}
+
+## subset of genes to study
+# gene.sub <- NULL
+# if (file.exists(GENESUB)) {
+#     gene.sub <- read.table(GENESUB, header=TRUE, sep="\t", quote="", comment.char="")
+# }
+if (GENESUB=="protein_coding") {
+    EnsDb.df <- ensembldb::select(EnsDb.Hsapiens.v86, keys=rownames(gene.annot), 
+                                  columns=c("GENEBIOTYPE"), keytype="GENEID")
+    gene.annot <- gene.annot[EnsDb.df[EnsDb.df[, "GENEBIOTYPE"]=="protein_coding", "GENEID"],]
+}
+
+## filter out-of-study genes
+if (file.exists(GENEFIL)) {
+    gene.fil           <- read.table(GENEFIL, header=F, sep='\t', quote="", comment.char="", row.names=1)
+    rownames(gene.fil) <- gsub(rownames(gene.fil), pattern="-T", replacement="")
+    gene.del           <- rownames(gene.fil[gene.fil[, 1] == 0, , drop=F])
+    gene.annot         <- gene.annot[! (rownames(gene.annot) %in% gene.del), ]
+    rm(gene.fil)
+}
+##-----
+```
+
+\newpage
+# Quality control
+
+```{r quality_control, eval=TRUE}
+## load count data #TODO: clean with the previous load
+# loadedData <- loadCountData(exp.design, file=COUNTFILE, as.numeric(HEADER))
+# exp.design <- loadedData$exp.design
+
+# if (CELL %in% unique(exp.design$cell)) {
+    # exp.design <- exp.design[exp.design$cell==CELL, , drop=F]
+# }
+# for (varname in colnames(exp.design)) {
+    # assign(varname, factor(exp.design[, varname], levels=sort(unique(exp.design[, varname]))))
+# }
+# conds    <- levels(cond)
+# biolreps <- exp.design$replicate
+
+##- color scheme for samples ----
+if (PROJECT=="BEAt_DKD") {
+    COLORGROUPS <- list()
+    COLORGROUPS[["BEAtDKDcell"]] <- setNames(
+        c("coral", "gray40", "turquoise3", "gold2", "gold2", "turquoise3", "brown"),
+        c("ABN",   "GEnC",   "K29",        "PT34",  "HMEC",  "ECFC",       "RAEC"))
+    # rainbowcolors <- c("green4", "magenta3", "darkblue")
+    # rainbowcolors.hsv <- rgb2hsv(col2rgb(rainbowcolors))
+    # rainbowcolors.hsv["s",] <- rainbowcolors.hsv["s",] - HSV.SDELTA
+    # rainbowcolors <- c(rainbowcolors, apply(rainbowcolors.hsv, 2, function(x) {
+    #     hsv(x[1], x[2], x[3])
+    # }))
+    rainbowcolors <- c("green2", "magenta2", "blue2", "darkgreen", "darkmagenta", "darkblue", "orange")
+    COLORGROUPS[["BEAtDKDcond"]] <- setNames(
+        rainbowcolors,
+        c("Basal", "InsulinResistant", "MannitolCtrl", "IR_Basal", "IR_InsulinResistant", "IR_MannitolCtrl", "DiabeticPatient")
+    )
+    if (OUT %in% c("Endothelial")) 
+        names(COLORGROUPS[["BEAtDKDcond"]]) <- gsub(names(COLORGROUPS[["BEAtDKDcond"]]), 
+                                                    pattern="InsulinResistant", replacement="DiabeticSoup")
+    if (OUT == "Helsinki_Basal") {
+        exp.design$group <- exp.design$cell
+        exp.design$color <- COLORGROUPS[["BEAtDKDcell"]][exp.design$group]
+    } else {
+        ## set colors to samples
+        exp.design$color <- sapply(as.vector(exp.design$cond), function(cnd) {
+            COLORGROUPS[["BEAtDKDcond"]][max(which(str_detect(cnd, names(COLORGROUPS[["BEAtDKDcond"]]))))]
+        })# factor(, levels=COLORGROUPS[["BEAtDKDcond"]])
+        exp.design$group <- sapply(as.vector(exp.design$cond), function(cnd) {
+            names(COLORGROUPS[["BEAtDKDcond"]])[max(which(str_detect(cnd, names(COLORGROUPS[["BEAtDKDcond"]]))))]
+        })# factor(, levels=names(COLORGROUPS[["BEAtDKDcond"]]))
+    }
+} else {
+    COLORGROUPS <- list()
+    COLORGROUPS[["BEAtDKDcell"]] <- setNames(
+        c("coral", "turquoise3"),
+        c("HF", "RC"))
+    exp.design$group <- exp.design$diet
+    exp.design$color <- COLORGROUPS[["BEAtDKDcell"]][exp.design$group]
+}
+##-----
+
+counts <- loadedData$counts
+## only consider genes in gene.annot
+counts <- counts[sort(intersect(rownames(gene.annot), rownames(counts))), , drop=F]
+gene.annot <- gene.annot[rownames(counts), , drop=F]
+
+if (RPKM != 0) { ## TO UPDATE
+    ## if GENEANNOTFILE contains the Exon_Size column
+    gene.size <- gene.annot$Exon_Size#[,2]#
+    names(gene.size) <- rownames(gene.annot)
+    ## otherwise, take GENELENGTH
+    if (length(gene.size)==0) {
+        tryCatch( {
+            gene.size <- suppressWarnings(read.table(GENELENGTH, header=FALSE, sep='\t'))
+        }, error=function(e) {
+            stop(paste(GENELENGTH, "not found", sep=' '))
+        })
+        rownames(gene.size) <- gene.size[, 1]
+        gene.size <- (as.matrix(gene.size[, 2, drop=F]))[, 1]
+        gene.size <- gene.size[names(gene.size) %in% rownames(counts)]
+    }
+    ## gene names in GENELENGTH should match count names
+    gene.size <- gene.size[rownames(counts)]
+    if (length(which(rownames(counts) != names(gene.size)) > 0) || length(which(rownames(counts) != rownames(gene.annot))) > 0) {
+        stop("Different gene order: size")
+    }
+    
+    if (RPKM == -1) {                   # convert rpkm to raw counts
+        counts <- round(apply(counts, 2, "*", gene.size/(10^3)))
+    } else if (RPKM == 1) {             # convert raw counts to rpkm 
+        libsizes.inv <- (10^6)/colSums(counts)
+        counts.rpkm <- 10^3*t(apply(counts, 1, "*", libsizes.inv))/gene.size
+        write.table(round(counts.rpkm,digits=2), file=paste0(OUTDIR, "rpkm.tsv"), col.names=NA, row.names=T, quote=F, sep="\t")
+    }
+}
+
+## number of reads per sample
+barplotTC(counts, exp.design, row.names.col=COLORGROUPS[["BEAtDKDcell"]], 
+          ylab=ifelse(OMICS=="Prot", "Total Scaled Abundance (in million)",  "Total Read Count (in million)"),
+          filename=paste0(OUTDIR, OUT_barplotTCName, ".pdf"), out=OUTFILE)
+write.table(matrix(counts,
+                   ncol=ncol(counts),
+                   nrow=nrow(counts),
+                   dimnames=list(sub(rownames(counts), pattern=if (OMICS!="Prot") '\\.[0-9]+$' else '', replacement=''),
+                       exp.design[colnames(counts), "run"])),
+            file=paste0(OUTDIR, 'counts.tsv'), sep='\t', quote=F, col.names=NA, row.names=T)
+
+if (OUT=="Helsinki1" && OMICS %in% c("miRNAseq")) {
+    CPM <- 2 ## debugging
+    ## keep only genes with median cpm >= 1 for at least one condition
+    counts <- removeLowCpm(counts, exp.design, cpm.threshold=CPM, num.threshold=NA)
+} else {
+    ## keep only genes with cpm >= 1 for at least one library
+    counts <- removeLowCpm(counts, exp.design, cpm.threshold=CPM, num.threshold=1)#ifelse(PROJECT=="BETADIAMARK", 4, 1))
+}
+
+gene.annot <- gene.annot[rownames(counts), , drop=F]
+
+## boxplot raw counts
+boxplotCounts(log2(counts+0.5), exp.design, row.names.col=COLORGROUPS[["BEAtDKDcell"]], 
+              ylab=paste0(ifelse(OMICS=="Prot", "log2 scaled abundance", "log2 raw read count")), 
+              filename=paste0(OUTDIR, OUT_boxplotCountsName, ".pdf"), out=OUTFILE)
+```
+
+`r if (OMICS=="Prot") {"
+	Proteins that were not identified in at least one experiment are removed from the analysis.
+"}`
+
+# Normalization
+We keep only `r if(OMICS=="Prot") {"proteins"} else {"genes"}` with CPM $\geq$ 1 in at least one sample: `r nrow(counts)` `r if (OMICS=="Prot") {"proteins"} else {"genes"}` being considered for further analysis. `r if (OMICS=="Prot") {"Protein measures"} else {"Read counts of these genes"}` were normalized using the TMM (trimmed mean of M-values) method from the *edgeR* package. Normalized data was then transformed to log2-counts per million (Log2CPM) with the *voom* transformation.
+     
+```{r DGE_object, eval=TRUE}
+## create DGEList
+dge <- DGEList(counts=counts, group=cond)
+## normalize
+dge <- calcNormFactors(dge, method="TMM")
+```
+		
+```{r batch_control, eval=TRUE}
+batch <- factor(exp.design$batch, levels=sort(unique(exp.design$batch)))
+
+## MDS plot
+#plotMDS(dge, top=10000)
+
+#### BATCH EFFECT CONTROL
+## design matrix for batch effect control
+#design <- model.matrix(~cond)
+#if (nlevels(batch) > 1) {
+#    design <- model.matrix(~batch+batch:cond)
+#}
+#rownames(design) <- exp.design$sample
+
+## predictive logFC separately for batches
+#logFC <- predFC(dge, design, prior.count=1, dispersion=0.05)
+
+## correlation of different batches
+#cor(logFC[,(length(levels(batch))+1):(length(levels(cond))*length(levels(batch)))])
+####
+```
+
+```{r DGE_design, eval=TRUE}
+## design matrix for differential expression
+design <- model.matrix(~0+cond)
+if (max(table(individual)) > 1) {
+    design <- model.matrix(~0+cond+individual)
+    if (BATCH.DESIGN && nlevels(batch) > 1) {
+        design <- model.matrix(~0+cond+batch) #individual
+    } else if (CELL != "ECFC") {
+        design <- model.matrix(~0+cond)
+    }
+}
+## NB. For Endothelial ECFC
+## DiabeticSoup vs Basal: paired samples + technical replication
+## MannitolCtrl vs Basal: paired samples
+## DiabeticPatient vs Basal: unpaired samples
+
+# design <- model.matrix(~0+cond)
+# if (OUT %in% c("Lund", "Endothelial")) 
+#     design <- model.matrix(~0+cond+individual) #&& !(CELL %in% c("GEnC", "HMEC"))
+# colnames(design) <- sub(colnames(design), pattern="^cond|^individual", replacement="")
+
+## if consider two-factor interaction
+# if (IDE.DESIGN) {
+#     ide1 <- exp.design$cell
+#     ide2 <- exp.design$ir #if (length(unique(exp.design$ir))==1) "" else exp.design$ir
+#     ide3 <- exp.design$pathology
+#     ide  <- paste(ide1, ide2, ide3, sep='_')
+#     ide  <- factor(ide, levels=unique(ide))
+#     design <- model.matrix(~0+ide)
+#     if (OUT %in% c("Lund", "Endothelial")) 
+#         if (BATCH.DESIGN && COMBAT == 0 && nlevels(batch) > 1) {
+#             design <- model.matrix(~0+ide+individual+batch)
+#         } else {
+#             design <- model.matrix(~0+ide+individual)
+#         }
+#     colnames(design) <- sub(colnames(design), pattern="^ide|^individual|^batch", replacement="")
+# }
+
+## if consider limma batch correction
+# if (BATCH.DESIGN && COMBAT == 0 && nlevels(batch) > 1) {
+#     print(nlevels(batch))
+#     design <- model.matrix(~0+cond+batch)
+#     colnames(design) <- sub(colnames(design), pattern="^cond|^batch", replacement="")
+# }
+colnames(design) <- sub(colnames(design), pattern="^cond|^individual|^batch", replacement="")
+rownames(design) <- exp.design$sample
+```
+	      
+```{r normalization, eval=TRUE}
+if (OUT %in% c("Helsinki", "Helsinki_Basal", "Endothelial") && OMICS %in% c("Prot", "miRNAseq")) {
+    NORM.METHOD <- if (OMICS=="Prot") "quantile" else "cyclicloess"
+    # NB. using cpm(counts) instead of counts looks worse on density plot
+    counts.norm.log <- normalizeBetweenArrays(log2(counts + 0.5), method=NORM.METHOD)
+    if (!is.null(biolreps)) {
+        ## treat replication on same subjects
+        corfit <- duplicateCorrelation(counts.norm.log, design=design, block=biolreps)
+    }
+} else {
+    ## voom transformation from limma
+    v <- voom(dge, design, plot=T, normalize.method="none")
+    if (!is.null(biolreps)) {
+        ## treat replication on same subjects
+        corfit <- duplicateCorrelation(v, design, block=biolreps)
+        v <- voom(dge, design, plot=T, normalize.method="none", 
+                  block=biolreps, correlation=corfit$consensus.correlation)
+        corfit <- duplicateCorrelation(v, design, block=biolreps)
+    }
+    counts.norm.log <- v$E
+}
+
+run.WGCNA <- (CELL=="all") #ncol(counts.norm.log) > 10
+
+if (BATCH.DESIGN && nlevels(batch) > 1) {
+    counts.norm.log.batchcorrected <- removeBatchEffect(counts.norm.log, batch=batch, design=design[,!grepl("^batch", colnames(design))])
+}
+
+## combat correction for batch effect
+if (COMBAT == 1 && BATCH.DESIGN && nlevels(batch) > 1) {
+    suppressPackageStartupMessages(library(sva))
+    modcombat <- model.matrix(~1, data=exp.design)
+    print(modcombat)
+    counts.norm.log.combat <- ComBat(dat=counts.norm.log, batch=batch, mod=modcombat, par.prior=TRUE)
+}
+## save normalized counts
+write.table(matrix(#counts.norm.log,
+                   round(2^counts.norm.log, digits=3),
+                   ncol=ncol(counts.norm.log),
+                   nrow=nrow(counts.norm.log),
+                   dimnames=list(sub(rownames(counts.norm.log), pattern=if (OMICS!="Prot") '\\.[0-9]+$' else '', replacement=''),
+                                 exp.design[colnames(counts.norm.log), "run"])),
+            file=paste0(OUTDIR, "normalized.tsv"), col.names=NA, row.names=T, quote=F, sep="\t")
+if (exists("counts.norm.log.batchcorrected")) {
+    write.table(matrix(#counts.norm.log,
+        round(2^counts.norm.log.batchcorrected, digits=3),
+        ncol=ncol(counts.norm.log),
+        nrow=nrow(counts.norm.log),
+        dimnames=list(sub(rownames(counts.norm.log), pattern=if (OMICS!="Prot") '\\.[0-9]+$' else '', replacement=''),
+                      exp.design[colnames(counts.norm.log), "run"])),
+        file=paste0(OUTDIR, "normalized_batchcorrected.tsv"), col.names=NA, row.names=T, quote=F, sep="\t")
+}
+## boxplot normalized counts
+boxplotCounts(counts.norm.log, exp.design,
+              row.names.col=COLORGROUPS[["BEAtDKDcell"]],
+              ylab=paste0(ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD),
+              filename=paste0(OUTDIR, "norm_", OUT_boxplotCountsName, ".pdf"), out=OUTFILE)
+## boxplot batch-corrected normalized counts
+if (exists("counts.norm.log.batchcorrected")) {
+    boxplotCounts(counts.norm.log.batchcorrected, exp.design,
+                  row.names.col=COLORGROUPS[["BEAtDKDcell"]],
+                  ylab=paste0("Batch-corrected ", ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD),
+                  filename=paste0(OUTDIR, "norm_", OUT_boxplotCountsName, ".pdf"), out=OUTFILE)
+}
+## boxplot combat batch-corrected normalized counts
+if (exists("counts.norm.log.combat")) {
+    boxplotCounts(counts.norm.log.combat, exp.design,
+                  row.names.col=COLORGROUPS[["BEAtDKDcell"]],
+                  ylab=paste0("Combat-corrected ", ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD),
+                  filename=paste0(OUTDIR, "norm_", OUT_boxplotCountsName, ".pdf"), out=OUTFILE)
+}
+## density plot for all samples
+densityPlot(counts.norm.log, exp.design, 
+            count.type=paste0(ifelse(OMICS=="Prot", "log2 scaled abundance: ", 
+                                     ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD),
+            filename=paste0(OUTDIR, OUT_densityPlotName, ".pdf"), legend.position="none", out=OUTFILE)
+if (exists("counts.norm.log.batchcorrected")) {
+    densityPlot(counts.norm.log.batchcorrected, exp.design, 
+                count.type=paste0("Batch-corrected ", 
+                                  ifelse(OMICS=="Prot", "log2 scaled abundance: ", 
+                                         ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD),
+                filename=paste0(OUTDIR, OUT_densityPlotName, ".pdf"), legend.position="none", out=OUTFILE)
+}
+if (exists("counts.norm.log.combat")) {
+    densityPlot(counts.norm.log.combat, exp.design, 
+                count.type=paste0("Combat-corrected ", 
+                                  ifelse(OMICS=="Prot", "log2 scaled abundance: ", 
+                                         ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD),
+                filename=paste0(OUTDIR, OUT_densityPlotName, ".pdf"), legend.position="none", out=OUTFILE)
+}
+```
+\newpage
+# Sample-sample distance heatmap
+
+```{r heatmap_samples, eval=TRUE, out.width="\\textwidth"}
+cex.heatlab <- ifelse(ncol(counts.norm.log)>40, 4, 8)
+# colnames(counts.norm.log) <- exp.design[colnames(counts.norm.log), 'run']
+# colnames(counts.norm.log) <- sub(sub(sub(sub(colnames(counts.norm.log), 
+#                                              pattern="ABN", replacement="Pod"), 
+#                                          pattern="GEnC", replacement="GEC"), 
+#                                      pattern="K29", replacement="MC"), 
+#                                  pattern="PT34", replacement="PTC")
+
+# hm <- Heatmap(as.matrix(dist(t(counts.norm.log))),
+#         name="Sample\ndistance",
+#         cluster_rows=T,
+#         clustering_distance_rows=DIST.METHOD,
+#         clustering_method_rows=HCLUST.METHOD,
+#         cluster_columns=T,
+#         clustering_distance_columns=DIST.METHOD,
+#         clustering_method_columns=HCLUST.METHOD,
+#         column_title=paste0(ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD, 
+#                             " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")"),
+#         column_title_rot=0,
+#         row_title_rot=0,
+#         column_names_gp=gpar(fontsize=cex.heatlab,
+#             col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+#         row_names_gp=gpar(fontsize=cex.heatlab,
+#             col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+#         col=heat.colors(100),
+#         na_col="white",
+#         width=unit(4, "inch"), height=unit(4, "inch")
+#         )
+# hm <- draw(hm)
+# hm.block.row.cond <- sapply(row_order(hm), function(x) {
+#     unique(as.vector(exp.design[colnames(counts.norm.log)[x], 'group']))
+# })
+# hm.block.row.cell <- sapply(row_order(hm), function(x) {
+#     unique(as.vector(exp.design[colnames(counts.norm.log)[x], 'cell']))
+# })
+# hm.block.column.cond <- sapply(column_order(hm), function(x) {
+#     unique(as.vector(exp.design[colnames(counts.norm.log)[x], 'group']))
+# })
+# hm.block.column.cell <- sapply(column_order(hm), function(x) {
+#     unique(as.vector(exp.design[colnames(counts.norm.log)[x], 'cell']))
+# })
+exp.design$cell <- sub(sub(sub(sub(exp.design$cell, 
+                                   pattern="ABN", replacement="Pod"),
+                               pattern="GEnC", replacement="GEC"),
+                           pattern="K29", replacement="MC"),
+                       pattern="PT34", replacement="PTC")
+hm.block.row.cond <- hm.block.column.cond <- exp.design[colnames(counts.norm.log), 'group']
+hm.block.row.cell <- hm.block.column.cell <- exp.design[colnames(counts.norm.log), 'cell']
+hm.block.row.cell <- hm.block.column.cell <- sub(sub(sub(sub(hm.block.row.cell,
+                                     pattern="ABN", replacement="Pod"),
+                                 pattern="GEnC", replacement="GEC"),
+                             pattern="K29", replacement="MC"),
+                         pattern="PT34", replacement="PTC")
+names(COLORGROUPS[["BEAtDKDcell"]]) <- sub(sub(sub(sub(names(COLORGROUPS[["BEAtDKDcell"]]),
+                                     pattern="ABN", replacement="Pod"),
+                                 pattern="GEnC", replacement="GEC"),
+                             pattern="K29", replacement="MC"),
+                         pattern="PT34", replacement="PTC")
+#pdf("Heatmap_sample.pdf", width=8, height=6)
+hm <- Heatmap(as.matrix(dist(t(counts.norm.log))),
+        name="Sample\ndistance",
+        cluster_rows=T,
+        clustering_distance_rows=DIST.METHOD,
+        clustering_method_rows=HCLUST.METHOD,
+        cluster_columns=T,
+        clustering_distance_columns=DIST.METHOD,
+        clustering_method_columns=HCLUST.METHOD,
+        column_title=paste0(ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD, 
+                            " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")"),
+        column_title_rot=0,
+        row_title_rot=0,
+        bottom_annotation=HeatmapAnnotation(show_annotation_name = TRUE, annotation_name_side = "right",
+            Condition=hm.block.column.cond,
+            col=list(Condition=COLORGROUPS[["BEAtDKDcond"]])
+        ),
+        top_annotation=HeatmapAnnotation(show_annotation_name = TRUE, annotation_name_side = "left",
+            Cell=hm.block.column.cell,
+            col=list(Cell=COLORGROUPS[["BEAtDKDcell"]])
+        ),
+        right_annotation=rowAnnotation(show_annotation_name = FALSE, show_legend = FALSE,
+            Condition=hm.block.row.cond,
+            col=list(Condition=COLORGROUPS[["BEAtDKDcond"]])
+        ),
+        left_annotation=rowAnnotation(show_annotation_name = FALSE, show_legend = FALSE,
+            Cell=hm.block.row.cell,
+            col=list(Cell=COLORGROUPS[["BEAtDKDcell"]])
+        ),
+        show_column_names = T,
+        show_row_names = T,
+        column_names_gp=gpar(fontsize=cex.heatlab,
+                             col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+        row_names_gp=gpar(fontsize=cex.heatlab,
+                          col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+        col=heat.colors(100),
+        na_col="white",
+        width=unit(4, "inch"), height=unit(4, "inch")
+)
+draw(hm, padding=unit(c(0,0,0,0), "cm"))
+#dev.off()
+if (exists("counts.norm.log.batchcorrected")) {
+    Heatmap(as.matrix(dist(t(counts.norm.log.batchcorrected))),
+            name="Sample\ndistance",
+            cluster_rows=T,
+            clustering_distance_rows=DIST.METHOD,
+            clustering_method_rows=HCLUST.METHOD,
+            cluster_columns=T,
+            clustering_distance_columns=DIST.METHOD,
+            clustering_method_columns=HCLUST.METHOD,
+            column_title=paste0("Batch-corrected", ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD, 
+                                " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")"),
+            column_title_rot=0,
+            row_title_rot=0,
+            column_names_gp=gpar(fontsize=cex.heatlab,
+                col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+            row_names_gp=gpar(fontsize=cex.heatlab,
+                col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+            col=heat.colors(100),
+            na_col="white",
+            width=unit(4, "inch"), height=unit(4, "inch")
+            )
+}
+hm <- Heatmap(as.matrix(dist(t(counts.norm.log))),
+              name="Sample\ndistance",
+              cluster_rows=T,
+              clustering_distance_rows=DIST.METHOD,
+              clustering_method_rows=HCLUST.METHOD,
+              cluster_columns=T,
+              clustering_distance_columns=DIST.METHOD,
+              clustering_method_columns=HCLUST.METHOD,
+              column_split=exp.design[colnames(counts.norm.log), 'cond'],
+              row_split=exp.design[colnames(counts.norm.log), 'cond'],
+              col=heat.colors(100),
+              na_col="white",
+              width=unit(4, "inch"), height=unit(4, "inch")
+              )
+#hm <- draw(hm)
+hm.block.col.row <- sapply(row_order(hm), function(x) {
+    unique(as.vector(exp.design[colnames(counts.norm.log)[x], 'color']))
+})
+hm.block.col.column <- sapply(column_order(hm), function(x) {
+    unique(as.vector(exp.design[colnames(counts.norm.log)[x], 'color']))
+})
+Heatmap(as.matrix(dist(t(counts.norm.log))),
+        name="Sample\ndistance",
+        cluster_rows=T,
+        clustering_distance_rows=DIST.METHOD,
+        clustering_method_rows=HCLUST.METHOD,
+        cluster_columns=T,
+        clustering_distance_columns=DIST.METHOD,
+        clustering_method_columns=HCLUST.METHOD,
+        column_split=exp.design[colnames(counts.norm.log), 'cond'],
+        column_title=paste0(ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD,
+                            " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")", " by conditions"),
+        column_title_rot=0,
+        row_split=exp.design[colnames(counts.norm.log), 'cond'],
+        row_title_rot=0,
+        bottom_annotation=HeatmapAnnotation(
+            condition=anno_block(
+                gp = gpar(fill=hm.block.col.column))),
+        right_annotation=rowAnnotation(
+            condition=anno_block(
+                gp = gpar(fill=hm.block.col.row))),
+        column_names_gp=gpar(fontsize=cex.heatlab,
+            col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+        row_names_gp=gpar(fontsize=cex.heatlab,
+            col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+        col=heat.colors(100),
+        na_col="white",
+        width=unit(4, "inch"), height=unit(4, "inch")
+        )
+if (exists("counts.norm.log.batchcorrected")) {
+    Heatmap(as.matrix(dist(t(counts.norm.log.batchcorrected))),
+            name="Sample\ndistance",
+            cluster_rows=T,
+            clustering_distance_rows=DIST.METHOD,
+            clustering_method_rows=HCLUST.METHOD,
+            cluster_columns=T,
+            clustering_distance_columns=DIST.METHOD,
+            clustering_method_columns=HCLUST.METHOD,
+            column_split=exp.design[colnames(counts.norm.log), 'cond'],
+            column_title=paste0("Batch-corrected ", ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD,
+                                " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")", " by conditions"),
+            column_title_rot=0,
+            row_split=exp.design[colnames(counts.norm.log), 'cond'],
+            row_title_rot=0,
+            bottom_annotation=HeatmapAnnotation(
+                condition=anno_block(
+                    gp = gpar(fill=hm.block.col.column))),
+            right_annotation=rowAnnotation(
+                condition=anno_block(
+                    gp = gpar(fill=hm.block.col.row))),
+            column_names_gp=gpar(fontsize=cex.heatlab,
+                col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+            row_names_gp=gpar(fontsize=cex.heatlab,
+                col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.norm.log), 'cell']]),
+            col=heat.colors(100),
+            na_col="white",
+            width=unit(4, "inch"), height=unit(4, "inch")
+            )
+}
+rm(hm)
+#save.image(paste0(OUTDIR,'/revised.RData'))
+```
+\newpage
+# Principal component analysis
+
+```{r PCA_all, eval=TRUE}
+PCAPlot(counts.norm.log, exp.design, 
+        title=paste0(CELL, " - ", 
+                     ifelse(OMICS=="Prot", "log2 scaled abundance: ", 
+                            ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), 
+                     NORM.METHOD,
+                     " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")"),
+        filename=paste0(OUTDIR, "/PCAPlot.pdf"), out=OUTFILE,
+        colour.var='group', shape.var=if (length(levels(cell)) > 1) 'cell' else 'batch', width=9, height=8)
+if (exists("counts.norm.log.batchcorrected")) {
+    PCAPlot(counts.norm.log.batchcorrected, exp.design, 
+            title=paste0("Batch corrected - ", CELL, " - ", ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD, 
+                         " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")"), 
+            filename=paste0(OUTDIR, "/PCAPlot_batchcorrected.pdf"), out=OUTFILE, width=9, height=8)
+}
+if (exists("counts.norm.log.combat")) {
+    PCAPlot(counts.norm.log.combat, exp.design, 
+            title=paste0("Combat - ", CELL, " - ", ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD, 
+                         " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")"), 
+            filename=paste0(OUTDIR, "/PCAPlot_combat.pdf"), out=OUTFILE, width=9, height=8)
+}
+
+for (cl in unique(exp.design$cell)) {
+    PCAPlot(counts.norm.log[, exp.design[exp.design$cell==cl, "sample"]], exp.design, 
+            title=paste0(cl, " - ", ifelse(OMICS=="Prot", "log2 scaled abundance: ", ifelse(OMICS=="miRNAseq", "log2 count: ", "log2CPM: ")), NORM.METHOD,
+                         " (", nrow(counts.norm.log), " ", BIOTYPES[OMICS],  ")"), 
+            filename=paste0(OUTDIR, "/PCAPlot", cl, ".pdf"), out=OUTFILE,
+            colour.var='group', shape.var=ifelse(OUT=="Endothelial", 'individual', "batch"), width=9, height=8)
+}
+```
+
+\newpage
+`r if (run.WGCNA) {"# Gene correlation"}`
+
+```{r WGCNA, eval=TRUE, include=TRUE}
+if (run.WGCNA) {
+    networkType <- "signed hybrid"
+    CORMETHOD <- "pearson"
+    MEDissThres <- 0.3
+    exprData <- t(counts.norm.log)
+    if (exists("counts.norm.log.batchcorrected")) {
+        exprData <- t(counts.norm.log.batchcorrected)
+    }
+    
+    #powers <- c(c(1:10), seq(from = 12, to=20, by=2))
+    ## compute number of clusters using WGCNA
+    ## sft <- invisible(pickSoftThreshold(exprData, powerVector=powers, verbose=0,
+    ##                                   networkType=networkType))
+    ## pdf('test.pdf')
+    ## par(mfrow=c(1,2))
+    ## cex1   <- 0.9
+    ## ## scale-free topology fit index as a function of the soft-thresholding power
+    ## plot(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3])*sft$fitIndices[, 2],
+    ##      xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+    ##      main = paste("Scale independence"))
+    ## text(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3])*sft$fitIndices[, 2],
+    ##      labels=powers, cex=cex1, col="red")
+    ## ## using an R^2 cut-off of h
+    ## abline(h=0.90, col="red")
+    ## ## mean connectivity as a function of the soft-thresholding power
+    ## plot(sft$fitIndices[, 1], sft$fitIndices[, 5],
+    ##      xlab="Soft Threshold (power)", ylab="Mean Connectivity", type="n",
+    ##      main=paste("Mean connectivity"))
+    ## text(sft$fitIndices[, 1], sft$fitIndices[, 5], labels=powers, cex=cex1, col="red")
+    ## dev.off()
+    soft.power <- ifelse(nrow(exprData) > 40, 6, 8) # sft$powerEstimate 
+    ## network adjacency
+    if (!file.exists(paste0(OUTDIR, 'TOM.RData'))) {
+        adjacency <- adjacency(exprData, power=soft.power,
+                               corOptions="use='p', method=CORMETHOD",
+                               type=networkType)
+        ## turn adjacency into topological overlap
+        TOM <- TOMsimilarity(adjacency, TOMType="signed")
+        save(TOM, file=paste0(OUTDIR, 'TOM.RData'))
+    } else {
+        load(paste0(OUTDIR, 'TOM.RData'))
+    }
+    dissTOM <- 1 - TOM
+    ## clustering
+    tree.gene <- hclust(as.dist(dissTOM), method="average")
+    ## module identification using dynamic tree cut
+    unmerged.labels <- cutreeDynamic(dendro            = tree.gene,
+                                     distM             = dissTOM,
+                                     deepSplit         = DEEPSPLIT,
+                                     useMedoids        = FALSE,
+                                     pamRespectsDendro = FALSE,
+                                     minClusterSize    = MINCLUSTERSIZE,
+                                     method            = 'hybrid',
+                                     verbose           = 0)
+    names(unmerged.labels) <- tree.gene$labels
+    unmerged.colors <- labels2colors(unmerged.labels, colorSeq=WEBSAFECOLORS)
+    ##- merge the most similar clusters together ----
+    ## calculate eigengenes
+    MEList <- moduleEigengenes(expr=exprData, colors=unmerged.colors)
+    unmerged.MEs <- MEList$eigengenes
+    ## calculate dissimilarity of module eigengenes
+    MEDiss <- 1 - cor(unmerged.MEs, use='p', method=CORMETHOD)
+    ## cluster module eigengenes
+    METree <- hclust(as.dist(MEDiss), method="average")
+    ## plot the tree of eigengenes
+    ## plot(METree, main="Clustering of module eigengenes", cex=0.5, xlab="", sub="")
+    ## abline(h=MEDissThres, col="red")
+    ## merge modules of close eigengenes
+    merge <- mergeCloseModules(exprData=exprData,
+                               MEs=unmerged.MEs,
+                               colors=unmerged.colors,
+                               cutHeight=MEDissThres, verbose=0)
+    ## merged module colors
+    merged.colors <- merge$colors
+    ## eigengenes of new merged modules
+    merged.MEs <- merge$newMEs
+    plotDendroAndColors(tree.gene, colors=cbind(unmerged.colors, merged.colors),
+                        groupLabels=c("Dynamic Tree Cut", "Merged dynamic"),
+                        dendroLabels=FALSE, hang=0.03, addGuide=TRUE,
+                        guideHang=0.05, main=paste0(ifelse(OMICS=="Prot", "Protein", "Gene"), " dendrogram and module colors"))
+    ##-----
+    
+    ##- module-trait correlation
+    ## module colors and eigengenes
+    moduleColors <- merged.colors
+    names(moduleColors) <- colnames(exprData)
+    MEs <- merged.MEs
+    rownames(MEs)       <- rownames(exprData)
+    moduleSizes <- table(moduleColors)
+    
+    write.table(MEs, file=paste0(OUTDIR, "ME_WGCNA.tsv"), col.names=NA, row.names=T, quote=F, sep="\t")
+}
+```
+
+```{r WGCNA_module_generaltrait_cor, eval=TRUE}
+if (run.WGCNA) {
+    ## traits
+    RANDOMTRAIT <- 3
+    traits <- mclapply(
+        intersect(if (PROJECT=="BEAt_DKD") c("cell", "pathology", "ir") else c("cell", "strain", "days", "diet"), colnames(exp.design)), ## BEAt-DKD-specific
+        mc.cores=detectCores(),
+        function(x) {
+            if (length(unique(exp.design[, x])) > 2) {
+                data.frame(sapply(unique(exp.design[, x]), function(y) {
+                    ifelse(exp.design[rownames(exprData), x] == y, 1, -1)
+                }), row.names=exp.design[rownames(exprData), 'run'])
+                #}), row.names=rownames(exprData))
+                    
+            } else if (length(unique(exp.design[, x])) == 2) {
+                x.selected <- unique(exp.design[, x])[which.max(nchar(unique(exp.design[, x])))]
+                setNames(data.frame(ifelse(exp.design[rownames(exprData), x] == x.selected, 1, -1),
+                                    row.names=exp.design[rownames(exprData), 'run']),
+                                    #row.names=rownames(exprData)),
+                         x.selected)
+            } else NA
+        })
+    traits <- traits[!is.na(traits)]
+    traits <- do.call(cbind, traits)
+    anticlass <- c(ABN="others",  K29="others", PT34="others",
+                   GEnC="others", ECFC="others", HMEC="others",
+                   InsulinResistant="Basal", IR="noIR"
+    )
+    
+    colnames(traits) <- paste(colnames(traits), anticlass[colnames(traits)], sep="_versus_")
+    if (RANDOMTRAIT > 0) {
+        traits.random <- sapply(paste0("random", 1:RANDOMTRAIT), function(i) {
+            sample(c(1,-1), nrow(exprData), replace=T)
+        })
+        traits <- cbind(traits, traits.random)
+    }
+    
+    ## module-trait correlation
+    moduleTraitCors <- NULL
+    textMatrices <- NULL
+    for (i in 1:ncol(traits)) {
+        traitData <- traits[, i]
+        
+        ## compute correlation of the module eigenvalue and the trait
+        moduleTraitCor <- cor(MEs, traitData, use="p", method=CORMETHOD)
+        moduleTraitPvalue <- corPvalueStudent(moduleTraitCor, nrow(traits))
+        moduleTraitCors <- cbind(moduleTraitCors, moduleTraitCor)
+        
+        ## display correlations and their p-values
+        textMatrix <- paste(signif(moduleTraitCor, 2), "\n(", signif(moduleTraitPvalue, 1), ")", sep="")
+        dim(textMatrix) <- dim(moduleTraitCor)
+        textMatrices <- cbind(textMatrices, textMatrix)
+        
+        ## output the module-trait matrix
+        textMatrix <- cbind(signif(moduleTraitCor, 2), signif(moduleTraitPvalue, 5))
+        colnames(textMatrix) <- c(paste(colnames(traits)[i], "cor",  sep="_"), 
+                                  paste(colnames(traits)[i], "pval", sep="_"))
+    }
+    colnames(moduleTraitCors) <- colnames(traits)
+    rownames(moduleTraitCors) <- sub(rownames(moduleTraitCors), pattern='ME', replacement='', perl=T)
+    ## display the correlation values within the heatmap plot
+    #pdf('WGCNA_module_trait_cor.pdf', width=10, height=20)
+    hm <- Heatmap(moduleTraitCors,
+                  name=paste0("Pearson correlation: ", ifelse(OMICS=="Prot", "protein abundance", "gene expression"), " ~ trait"),
+                  color_space="RGB",
+                  cluster_columns=F,
+                  cluster_rows=T,
+                  clustering_distance_columns=DIST.METHOD,
+                  clustering_method_columns=HCLUST.METHOD,
+                  show_row_dend=F,
+                  row_labels=paste(rownames(moduleTraitCors), " (", 
+                                   moduleSizes[rownames(moduleTraitCors)], ")", sep=''),
+                  row_names_side="left",
+                  column_names_gp=gpar(fontsize=12, angle=45),
+                  cell_fun=function(j, i, x, y, width, height, fill) {
+                      grid.text(sprintf("%.2f", moduleTraitCors[i, j]), x, y, gp=gpar(fontsize=8))
+                  },
+                  left_annotation=rowAnnotation(module=rownames(moduleTraitCors),
+                                                col=list(module=setNames(
+                                                    rownames(moduleTraitCors),
+                                                    rownames(moduleTraitCors))
+                                                ),
+                                                show_legend=F),
+                  col=colorRamp2(
+                      c(-1, 0, 1),
+                      c("blue", "ivory", "red"), space="RGB"),
+                  na_col="white",
+                  heatmap_legend_param=list(legend_direction="horizontal",
+                                            legend_width=unit(5, "inch"),
+                                            title_gp=gpar(fontsize=9, fontface='bold'),
+                                            labels_gp=gpar(fontsize = 9)),
+                  row_dend_width=unit(2, "cm"),
+                  width=unit(6, "inch")
+    )
+    draw(hm, heatmap_legend_side="top", padding=unit(c(3,1,1,1), "cm"))
+    rm(hm)
+}
+```
+
+\newpage
+# Differential expression
+  
+```{r DGE, eval=TRUE}
+## fit the linear model
+if (OUT %in% c("Helsinki", "Helsinki_Basal", "Endothelial") && OMICS %in% c("Prot", "miRNAseq")) {
+    if (is.null(biolreps)) {
+        fit <- lmFit(counts.norm.log, design=design)
+    } else {
+        fit <- lmFit(counts.norm.log, design=design, block=biolreps, cor=corfit$consensus)
+    }
+} else {
+    if (is.null(biolreps)) {
+        fit <- lmFit(v, design=design)
+    } else {
+        fit <- lmFit(v, design=design, block=biolreps, cor=corfit$consensus.correlation)
+    }
+}
+##-- fit$Amean is the average of counts.norm.log
+
+## contrast matrix
+conts <- loadContrasts(CONTRASTFILE, "-")
+
+if (IDE.DESIGN) {
+    if (CELL=="all") {
+        if (IR=="all") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_ABN  = ABN__InsulinResistant-ABN__Basal,
+                InsulinResistant_versus_Basal_in_GEnC = GEnC__InsulinResistant-GEnC__Basal,
+                InsulinResistant_versus_Basal_in_K29  = K29__InsulinResistant-K29__Basal,
+                InsulinResistant_versus_Basal_in_PT34 = PT34__InsulinResistant-PT34__Basal,
+                InsulinResistant_versus_Basal_in_ABN_IR  = ABN_IR_InsulinResistant-ABN_IR_Basal,
+                InsulinResistant_versus_Basal_in_GEnC_IR = GEnC_IR_InsulinResistant-GEnC_IR_Basal,
+                InsulinResistant_versus_Basal_in_K29_IR  = K29_IR_InsulinResistant-K29_IR_Basal,
+                InsulinResistant_versus_Basal_in_PT34_IR = PT34_IR_InsulinResistant-PT34_IR_Basal,
+                levels=design
+            )
+        }
+        else if (IR=="IR") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_ABN_IR  = ABN_IR_InsulinResistant-ABN_IR_Basal,
+                InsulinResistant_versus_Basal_in_GEnC_IR = GEnC_IR_InsulinResistant-GEnC_IR_Basal,
+                InsulinResistant_versus_Basal_in_K29_IR  = K29_IR_InsulinResistant-K29_IR_Basal,
+                InsulinResistant_versus_Basal_in_PT34_IR = PT34_IR_InsulinResistant-PT34_IR_Basal,
+                levels=design
+            )
+        }
+        else if (IR=="") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_ABN  = ABN__InsulinResistant-ABN__Basal,
+                InsulinResistant_versus_Basal_in_GEnC = GEnC__InsulinResistant-GEnC__Basal,
+                InsulinResistant_versus_Basal_in_K29  = K29__InsulinResistant-K29__Basal,
+                InsulinResistant_versus_Basal_in_PT34 = PT34__InsulinResistant-PT34__Basal,
+                levels=design
+            ) 			          		
+        }
+    } else if (CELL=="ABN") {
+        if (IR=="all") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_ABN     = ABN__InsulinResistant-ABN__Basal,
+                InsulinResistant_versus_Basal_in_ABN_IR  = ABN_IR_InsulinResistant-ABN_IR_Basal,
+                levels=design
+            )    				
+        }
+        else if (IR=="IR") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_ABN_IR  = ABN_IR_InsulinResistant-ABN_IR_Basal,
+                levels=design
+            )
+        }
+        else if (IR=="") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_ABN  = ABN__InsulinResistant-ABN__Basal,
+                levels=design
+            )
+            
+        }
+    } else if (CELL=="GEnC") {
+        if (IR=="all") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_GEnC    = GEnC__InsulinResistant-GEnC__Basal,
+                InsulinResistant_versus_Basal_in_GEnC_IR = GEnC_IR_InsulinResistant-GEnC_IR_Basal,
+                levels=design
+            )    				
+        }
+        else if (IR=="IR") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_GEnC_IR  = GEnC_IR_InsulinResistant-GEnC_IR_Basal,
+                levels=design
+            )    				
+        }
+        else if (IR=="") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_GEnC = GEnC__InsulinResistant-GEnC__Basal,
+                levels=design
+            )    				
+        }
+    } else if (CELL=="K29") {
+        if (IR=="all") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_K29     = K29__InsulinResistant-K29__Basal,
+                InsulinResistant_versus_Basal_in_K29_IR  = K29_IR_InsulinResistant-K29_IR_Basal,
+                levels=design
+            )    				
+        }
+        else if (IR=="IR") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_K29_IR  = K29_IR_InsulinResistant-K29_IR_Basal,
+                levels=design
+            )    			
+        }
+        else if (IR=="") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_K29  = K29__InsulinResistant-K29__Basal,
+                levels=design
+            )
+            
+        }
+    } else if (CELL=="PT34") {
+        if (IR=="all") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_PT34    = PT34__InsulinResistant-PT34__Basal,
+                InsulinResistant_versus_Basal_in_PT34_IR = PT34_IR_InsulinResistant-PT34_IR_Basal,
+                levels=design
+            )
+        }
+        else if (IR=="IR") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_PT34_IR  = PT34_IR_InsulinResistant-PT34_IR_Basal,
+                levels=design
+            )    				
+        }
+        else if (IR=="") {
+            contrast.matrix <- makeContrasts(
+                InsulinResistant_versus_Basal_in_PT34 = PT34__InsulinResistant-PT34__Basal,
+                levels=design
+            )    			
+        }
+    }
+    
+} else {
+    contrast.matrix <- makeContrasts(contrasts=conts, levels=colnames(design))
+}
+conts <- colnames(contrast.matrix)
+
+## build linear model
+fit <- contrasts.fit(fit, contrast.matrix)
+fit <- eBayes(fit)
+## After fitting the model, from now on, counts.norm.log.batchcorrected will considered for all outputs
+if (exists("counts.norm.log.batchcorrected")) {
+    counts.norm.log <- counts.norm.log.batchcorrected
+}
+
+## extract gene DE information
+allgenes <- topTable(fit, number=nrow(counts.norm.log), coef=NULL,
+                     sort.by="none", p.value=1, lfc=0)
+## Log2FC
+FC <- allgenes[, if (length(conts)==1) "logFC" else conts, drop=F]
+colnames(FC) <- paste("Log2FC_", conts, sep="")
+## p-value
+rawP <- format(fit$p.value[, conts, drop=F][rownames(allgenes), , drop=F], digits=3, scientific=T)
+colnames(rawP) <- paste("p_value_", colnames(rawP), sep="")
+## global adjusted p-value
+if (ADJUSTALL) {
+    fdr.glob <- matrix(p.adjust(as.vector(fit$p.value), method=ADJUST.METHOD), 
+                       nrow=nrow(counts.norm.log), ncol=length(conts), 
+                       byrow = F)
+} else {
+    fdr.glob <- apply(fit$p.value, 2, function(pv) {
+        p.adjust(pv, method=ADJUST.METHOD)
+    })
+}
+rownames(fdr.glob) <- rownames(counts.norm.log)
+colnames(fdr.glob) <- conts
+adjP <- format(fdr.glob[rownames(allgenes), , drop=F], digits=3, scientific=T)
+colnames(adjP) <- paste("FDR_", colnames(adjP), sep="")
+## writing into DE.tsv
+counts.df <- round(counts.norm.log[rownames(allgenes),], 3)
+#colnames(counts.df) <- paste(exp.design[colnames(counts.df), 'cond'], colnames(counts.df), sep="_")
+colnames(counts.df) <- exp.design[colnames(counts.df), "run"]
+idmap <- read.table(GENEID, header=T, sep='\t', quote="")
+if (OMICS=="Prot") {
+    gene.df <- idmap[, c('uniprot', 'symbol')]
+} else {
+    gene.df <- idmap[, c('ensembl', 'symbol')]
+}
+## remove any duplicates in first column: keep first occurrence
+gene.df <- gene.df[!is.na(gene.df[,1]) & !duplicated(gene.df[,1]), ]
+rownames(gene.df) <- gene.df[,1]
+gene.df <- gene.df[, -1, drop=F]
+
+DE.df <- data.frame(
+    #name=gene.annot[rownames(allgenes), 'Name'],
+    name=gene.df[sub(rownames(allgenes), pattern='\\.[0-9]+$', replacement=''), 'symbol'],
+    counts.df,
+    FC,
+    rawP,
+    adjP)
+```
+
+Volcano plots
+
+```{r volcano_plot, eval=TRUE}
+##EVAL=TRUE
+colnames(FC) <- gsub(colnames(FC), pattern="Log2FC_", replacement="")
+colnames(adjP) <- gsub(colnames(adjP), pattern="FDR_", replacement="")
+colnames(FC) <- gsub(colnames(FC), pattern="InsulinResistant_versus_Basal_in_", replacement="")
+colnames(adjP) <- gsub(colnames(adjP), pattern="InsulinResistant_versus_Basal_in_", replacement="")
+
+FC <- FC[, sort(colnames(FC)), drop=F]
+adjP <- adjP[, sort(colnames(adjP)), drop=F]
+FC.df <- melt(as.matrix(FC))
+adjP.df <- melt(as.matrix(adjP))
+invisible(assert_that(!any(FC.df$Var1!=adjP.df$Var1), msg='Error in melt!'))
+volcano.df <- data.frame(FC.df, FDR=as.numeric(adjP.df$value))
+colnames(volcano.df) <- c("ID", "Cell", "Log2FC", "FDR")
+volcano.df$sig <- factor(ifelse(abs(volcano.df$Log2FC) > 1, ifelse(volcano.df$FDR < FDR, "red", "green"), ifelse(volcano.df$FDR < FDR, "blue", "grey70")),
+			 levels=c("red", "green", "blue", "grey70"))
+p <- ggplot(volcano.df, aes(x=Log2FC, y=-log10(FDR), colour=sig)) +
+    geom_point(size=0.4, alpha=1, na.rm=T) +
+    #scale_color_manual(name="", values=levels(volcano.df$sig), guide='none') +
+    scale_color_manual(name="", values=intersect(levels(volcano.df$sig), unique(volcano.df$sig)), guide='none') +
+    geom_hline(yintercept = -log10(FDR), colour="#990000", linetype="dashed") +
+    geom_vline(xintercept =  LOGFC, colour="#990000", linetype="dashed") +
+    geom_vline(xintercept = -LOGFC, colour="#990000", linetype="dashed") +
+    facet_wrap(~Cell, ncol=2, labeller=labeller(Cell=setNames(gsub("PT34", "PTC", 
+                                                                   gsub("GEnC", "GEC", 
+                                                                        gsub("K29", "MC", 
+                                                                             gsub("ABN", "Pod", 
+                                                                                  levels(volcano.df$Cell))))), 
+                                                              levels(volcano.df$Cell)))) +
+    ggtitle(paste0("InsulinResistant_versus_Basal contrasts: ", 
+                   ifelse(OMICS=="Prot", "proteomics", "RNA-seq"))) +
+    #scale_y_continuous(trans = "log10") +
+    xlim(-max(abs(volcano.df$Log2FC)), max(abs(volcano.df$Log2FC))) +
+    theme_grey() +
+    theme(title           = element_text(size=12, face='bold'),
+          legend.text     = element_text(size=10),
+          legend.position = "top",
+          strip.text      = element_text(size=14),
+          axis.text       = element_text(size=12)
+          )
+print(p)
+```
+
+Number of regulated genes
+
+```{r regulated_genes, eval=TRUE}
+results     <- decideTests(fit, method="global", adjust.method=ADJUST.METHOD,
+                           p.value=FDR, lfc=LOGFC)
+results.0FC <- decideTests(fit, method="global", adjust.method=ADJUST.METHOD,
+                           p.value=FDR, lfc=0)
+invisible(assert_that(sum(colnames(summary(results))!=colnames(summary(results.0FC)))==0,
+                      msg='Order error in decideTests'))
+results.list <- list("Log2FC > 1"=t(summary(results))[, c("Down", "Up"), drop=F],
+                     "Log2FC > 0"=t(summary(results.0FC))[, c("Down", "Up"), drop=F])
+results.summary <- do.call(cbind, results.list)
+
+results.abs <- abs(results)
+regulated <- results.abs[rowSums(results.abs) > 0, ]
+results.0FC.abs <- abs(results.0FC)
+regulated.0FC <- results.0FC.abs[rowSums(results.0FC.abs) > 0, ]
+
+kable(cbind(Contrast=rownames(results.summary),
+            results.summary),
+      row.names=F) %>% add_header_above(c(" ", "Log2FC > 1" = 2, "Log2FC > 0" = 2))
+
+## plot
+regulated.df <- melt(results.list)
+colnames(regulated.df)[colnames(regulated.df)=="L1"] <- "Cutoff"
+regulated.df$Cutoff <- factor(regulated.df$Cutoff,
+                              levels=sort(unique(regulated.df$Cutoff)))
+invisible(assert_that(!any(paste0(regulated.df[regulated.df$Cutoff=="Log2FC > 1", "Var1"],
+                                  regulated.df[regulated.df$Cutoff=="Log2FC > 1", "Var2"])!=
+                           paste0(regulated.df[regulated.df$Cutoff=="Log2FC > 0", "Var1"],
+                                  regulated.df[regulated.df$Cutoff=="Log2FC > 0", "Var2"])),
+                      msg="Error in melt!"))
+regulated.df$Stack <- regulated.df$value - (regulated.df$Cutoff=="Log2FC > 0")*regulated.df[regulated.df$Cutoff=="Log2FC > 1", "value"]
+# regulated.df <- regulated.df[!regulated.df$Var1 %in% c("in_ABN_IR_versus_in_ABN", 
+#                                                        "in_GEnC_IR_versus_in_GEnC", 
+#                                                        "in_K29_IR_versus_in_K29", 
+#                                                        "in_PT34_IR_versus_in_PT34"),]
+regulated.df$IR <- factor(ifelse(grepl("_IR$", regulated.df$Var1), "withIR", "withoutIR"))
+regulated.df$Cell <- factor(gsub(regulated.df$Var1, pattern="InsulinResistant_versus_Basal_in_", replacement=""),
+                            levels=sort(unique(gsub(conts, pattern="InsulinResistant_versus_Basal_in_", replacement="")), decreasing=T))
+
+colnames(regulated.df)[2] <- c("Regulation")
+colors <- c("Down.Log2FC > 0" = "#F4A582",
+            "Up.Log2FC > 0"   = "#92C5DE",
+            "Down.Log2FC > 1" = "#CA0020",
+            "Up.Log2FC > 1"   = "#0571B0")
+colors <- colors[levels(interaction(regulated.df$Regulation, regulated.df$Cutoff))]
+regulated.df$color <- factor(ifelse(regulated.df$Regulation=="Down",
+                                    ifelse(regulated.df$Cutoff=="Log2FC > 0", colors["Down.Log2FC > 0"], colors["Down.Log2FC > 1"]),
+                                    ifelse(regulated.df$Cutoff=="Log2FC > 0", colors["Up.Log2FC > 0"], colors["Up.Log2FC > 1"])),
+                             levels=colors)
+regulated.df[regulated.df$Regulation=="Down",
+             grep("Stack", colnames(regulated.df))] <- -1 * regulated.df[regulated.df$Regulation=="Down", grep("Stack", colnames(regulated.df))]
+
+p <- ggplot(regulated.df, aes(x=Cell, y=Stack, fill=interaction(Regulation, Cutoff))) +
+    #facet_wrap(~IR, nrow=2) +
+    ylab("Number of DE genes") +
+    ylim(-max(regulated.df$value), max(regulated.df$value)) +
+    coord_flip() +
+    ggtitle(if (!OUT %in% c("Lund", "Endothelial")) paste0("InsulinResistant_versus_Basal contrasts: ", 
+                                                           ifelse(OMICS=="Prot", "proteomics", "RNA-seq")) else "Contrasts") +
+    theme_grey() +
+    theme(title           = element_text(size=12, face='bold'),
+          legend.text     = element_text(size=9),
+          legend.position = "top",
+          strip.text      = element_text(size=18),
+          axis.text       = element_text(size=11),
+          axis.text.y     = element_text(color=COLORGROUPS[["BEAtDKDcell"]][
+              sub(sub(sub(sub(sub(levels(regulated.df$Cell),
+                                  pattern=paste(c("_IR", 
+                                                  "DiabeticSoup_versus_Basal_in_",
+                                                  "InsulinResistant_versus_Basal_in_",
+                                                  "MannitolCtrl_versus_Basal_in_",
+                                                  "DiabeticSoup_versus_MannitolCtrl_in_",
+                                                  "DiabeticPatient_versus_Basal_in_",
+                                                  "DiabeticPatient_versus_DiabeticSoup_in_",
+                                                  "DiabeticPatient_versus_MannitolCtrl_in_"
+                                  ), collapse="|"),
+                                  replacement=""),
+                              pattern="ABN", replacement="Pod"),
+                          pattern="GEnC", replacement="GEC"),
+                      pattern="K29", replacement="MC"),
+                  pattern="PT34", replacement="PTC")])
+    )
+p <- p + geom_bar(width=0.6, position="stack", stat="identity") +
+    geom_hline(yintercept=0, color="white") +
+    scale_fill_manual(name="", values=levels(regulated.df$color))
+print(p)
+##-----
+```
+
+`r nrow(regulated)` and `r nrow(regulated.0FC)` genes are found to be differentially expressed with Log2FC > `r LOGFC` and Log2FC > `r 0`, respectively, in at least one of the studied contrasts (FDR < `r FDR`).
+
+We consider hereafter genes regulated with FDR < `r FDR` and Log2FC > `r 0`.
+
+The Upset plots shown here are an alternative to the Venn diagrams (see explanation in Figure 1). They allow visualizing intersection and union of several sets.
+
+```{r upset_venn_plot, fig.pos='h', out.width="80%", fig.cap="Correspondence between Venn diagram and UpSet plot"}
+#include_graphics('~/devel/RNAseq_analysis/UpSet-Venn.png')
+```
+		 
+```{r regulated_genes_cluster, eval=TRUE, include=TRUE}
+## conds.list <- list(noIR=grep("__", conds, value=T),
+##                    IR=grep("_IR_", conds, value=T),
+##                    IR_noIR=conds)
+conts.list <- list(single=conts)
+conds.list <- list(single=conds)
+
+for (i in 1:length(conts.list)) {
+    ctl <- conts.list[[i]]
+    cdl <- conds.list[[i]]
+    regulated.ctl <- as.data.frame(regulated.0FC[, ctl])
+    regulated.ctl <- regulated.ctl[rowSums(regulated.ctl) > 0, , drop=F]
+    if (nrow(regulated.ctl) == 0) {
+        UpSetGroup <- NA
+    } else {
+        ## Upset plot
+        mcm <- make_comb_mat(regulated.ctl)
+        pdf(paste0(OUTDIR, "upset_", i, ".pdf"), width=12, height=5)
+        print(UpSet(mcm,
+                    top_annotation    = HeatmapAnnotation(
+                        degree               = as.character(comb_degree(mcm)),
+                        "Intersection\nsize" = anno_barplot(
+                            x      = comb_size(mcm),
+                            border = FALSE,
+                            gp     = gpar(fill="black"),
+                            height = unit(2, "cm")
+                        ),
+                        col                  = list(
+                            degree=setNames(1:max(comb_degree(mcm)),
+                                            as.character(1:max(comb_degree(mcm))))),
+                        annotation_name_side = "left", 
+                        annotation_name_rot  = 0),
+                    bottom_annotation = HeatmapAnnotation(group=
+                                                              anno_text(paste0("g", 1:length(comb_size(mcm))), rot=45, gp=gpar(fontsize=8))),
+                    comb_order        = order(comb_degree(mcm), comb_size(mcm), decreasing=T),
+                    set_order         = NULL,
+                    comb_col          = comb_degree(mcm),
+                    row_names_gp      = gpar(fontsize=8),
+                    heatmap_height    = unit(10, 'cm')
+        ))
+        dev.off()
+        ## heatmap plot for regulated genes
+        counts.regulated <- counts.norm.log[rownames(regulated.ctl),
+                                            exp.design[exp.design$cond %in% cdl, 'sample']]
+        mcm.comb <- comb_name(mcm)
+        names(mcm.comb) <- paste0("g", 1:length(mcm.comb))
+        mcm.split <- unlist(mclapply(1:length(mcm.comb), mc.cores=length(mcm.comb), function(i) {
+            setNames(rep(names(mcm.comb)[i], (attributes(mcm)$comb_size)[i]),
+                     extract_comb(mcm, mcm.comb[i]))
+        }))
+        ## group.gene <- setNames(group.module[moduleColors],
+        ##                       names(moduleColors))[rownames(regulated.ctl)]
+        UpSetGroup <- mcm.split[rownames(DE.df)]
+        ## hm <- Heatmap(counts.regulated,
+        ##               cluster_rows=T,
+        ##               clustering_distance_rows=DIST.METHOD,
+        ##               clustering_method_rows=HCLUST.METHOD,
+        ##               cluster_columns=T,
+        ##               clustering_distance_columns=DIST.METHOD,
+        ##               clustering_method_columns=HCLUST.METHOD,
+        ##               row_split=group.gene,
+        ##               #row_km=num.km,#length(unique(group.gene)),
+        ##               column_split=exp.design[colnames(counts.regulated), 'cond']
+        ##               )
+        ## hm.block.col.column <- sapply(column_order(hm), function(x) {
+        ##     unique(as.vector(exp.design[colnames(counts.regulated)[x], 'color']))
+        ## })
+        ## hm <- Heatmap(counts.regulated,
+        ##               name="Log2CPM",
+        ##               cluster_rows=T,
+        ##               clustering_distance_rows=DIST.METHOD,
+        ##               clustering_method_rows=HCLUST.METHOD,
+        ##               #cluster_rows=cluster_within_group(t(counts.regulated), group.km.gene),
+        ##               cluster_columns=T,
+        ##               clustering_distance_columns=DIST.METHOD,
+        ##               clustering_method_columns=HCLUST.METHOD,
+        ##                                 #row_split=mcm.split[rownames(counts.regulated)],
+        ##               #row_km=num.km,#length(unique(group.gene)),
+        ##               row_split=group.gene,
+        ##               column_split=exp.design[colnames(counts.regulated), 'cond'],
+        ## 	      column_title_rot=90,
+        ## 	      show_parent_dend_line=T,
+        ##               gap=unit(0.1, "cm"),
+        ##               bottom_annotation=HeatmapAnnotation(
+        ##                   condition=anno_block(
+        ##                       gp=gpar(fill=hm.block.col.column))),
+        ##               ## right_annotation=rowAnnotation(
+        ##               ##     trend = function(index) {
+        ##               ##         sub_mat = counts.regulated[
+        ##               ##             index,
+        ##               ##             unlist(column_order(hm)), drop=F]
+        ##               ##         y = colMeans(sub_mat)
+        ##               ##         x = seq_len(ncol(sub_mat))
+        ##               ##         pushViewport(viewport(xscale = c(0.5, ncol(sub_mat) + 0.5),
+        ##               ##                               yscale = c(min(y)-diff(range(y))/20,
+        ##               ##                                   max(y))))
+        ##               ##         grid.rect()
+        ##               ##         grid.yaxis(gp = gpar(fontsize = 8), main=F)
+        ##               ##         sapply(1:length(column_order(hm)), function(j) {#
+        ##               ##             x.min <- ifelse(j==1,
+        ##               ##                             0,
+        ##               ##                             sum(lengths(column_order(hm)[1:(j-1)]))) + 1
+        ##               ##             x.max <- sum(lengths(column_order(hm)[1:j]))
+        ##               ##             grid.segments(x0=x.min,
+        ##               ##                           y0=min(y)-diff(range(y))/20,
+        ##               ##                           x1=x.max,
+        ##               ##                           y1=min(y)-diff(range(y))/20,
+        ##               ##                           gp=gpar(col=hm.block.col.column[j], lwd=4, lineend='butt'),
+        ##               ##                           default.units = "native")
+        ##               ##         })
+        ##               ##         grid.lines(x, y, default.units = "native")
+        ##               ##         upViewport()
+        ##               ##     }, width = unit(2, "cm")),
+        ##               left_annotation=rowAnnotation(group=mcm.split[rownames(counts.regulated)],
+        ##                   col=list(group=setNames(rainbow(length(mcm.comb)),
+        ##                                paste0("g", 1:length(comb_size(mcm)))))),
+        ##               show_row_names=F,
+        ##               show_row_dend=T,
+        ##               column_names_gp=gpar(fontsize=8,
+        ##                   col=COLORGROUPS[["BEAtDKDcell"]][exp.design[colnames(counts.regulated), 'cell']]),
+        ##               col=colorRamp2(
+        ##                   c(min(counts.regulated), 0, max(counts.regulated)),
+        ##                   c("blue", "ivory", "red"), space="RGB"),
+        ##               na_col="white",
+        ##               heatmap_legend_param=list(legend_direction="vertical",
+        ##                   legend_width=unit(5, "inch"),
+        ##                   title_gp=gpar(fontsize=9, fontface='bold'),
+        ##                   labels_gp=gpar(fontsize = 9)),
+        ##               row_dend_width=unit(2, "cm"),
+        ##               width=unit(6.5, "inch"),
+        ##               heatmap_height=unit(12, "inch")
+        ##               )
+        ## r.anno <- rowAnnotation(
+        ##               trend=anno_zoom(
+        ##                   align_to=group.gene[rownames(counts.regulated)],
+        ##                   which = "row",
+        ##                   size = unit(3, "cm"),
+        ##                   gap = unit(1, "cm"),
+        ##                   link_width = unit(2, "cm"),
+        ##                   width = unit(3, "cm"),
+        ##                   panel_fun = function(index) {
+        ##                       sub_mat = counts.regulated[
+        ##                           index,
+        ##                           unlist(column_order(hm)), drop=F]
+        ##                       y = colMeans(sub_mat)
+        ##                       x = seq_len(ncol(sub_mat))
+        ##                       pushViewport(viewport(xscale=c(0.5, ncol(sub_mat) + 0.5),
+        ##                                             yscale=c(min(y)-diff(range(y))/20,
+        ##                                                 max(y))))
+        ##                       grid.rect()
+        ##                       grid.yaxis(gp = gpar(fontsize = 8), main=F)
+        ##                       sapply(1:length(column_order(hm)), function(j) {
+        ##                           x.min <- ifelse(j==1,
+        ##                                           0,
+        ##                                           sum(lengths(column_order(hm)[1:(j-1)]))) + 1
+        ##                           x.max <- sum(lengths(column_order(hm)[1:j]))
+        ##                           grid.segments(x0=x.min,
+        ##                                         y0=min(y)-diff(range(y))/20,
+        ##                                         x1=x.max,
+        ##                                         y1=min(y)-diff(range(y))/20,
+        ##                                         gp=gpar(col=hm.block.col.column[j], lwd=4, lineend='butt'),
+        ##                                         default.units = "native")
+        ##                       })
+        ##                       grid.lines(x, y, default.units = "native")
+        ##                       upViewport()
+        ##                   }), width = unit(5, "cm"))
+        ## draw(hm + r.anno)
+    }
+    
+    DE.write <- data.frame(DE.df, UpSetGroup=UpSetGroup)
+    if (run.WGCNA) DE.write <- data.frame(DE.write, 
+                                          WGCNA=moduleColors[rownames(DE.df)])
+    write.table(DE.write, file=paste0(OUTDIR, i, "_DE.tsv"), sep="\t", quote=F, row.names=T, col.names=NA)
+}
+```
+
+```{r upset, eval=TRUE, fig.pos='h', out.width="100%", fig.cap="Number of differentially expressed genes between InsulinResistant and Basal"}
+#include_graphics(paste0(OUTDIR, "upset_1.pdf"))
+```	
+
+(See more in `r paste0(OUT, "_DE.tsv")`)
+
+\newpage
+# Gene Ontology enrichment analysis
+
+```{r go_import, eval=FALSE, include=FALSE}
+#' Abbreviate GO term description
+#' Abbreviation: mp - metabolic process, bp - biosynthetic process, cp - catabolic process, tt - transmembrane transport, aa - amino acid, sp - signaling pathway, reg. - regulation, res. - response.
+#'
+#' This function produces abbreviations in GO term description.
+#' @param x A string describing a GO term
+#' @return The abbreviation of x
+#' @keywords internal
+abbr <- function(x) {
+    return (
+        gsub(
+            gsub(
+                gsub(
+                    gsub(
+                        gsub(
+                            gsub(
+                                gsub(
+                                    gsub(x,
+                                         pattern="metabolic process", replacement="mp"),
+                                    pattern="biosynthetic process", replacement="bp"),
+                                pattern="catabolic process", replacement="cp"),
+                            pattern="transmembrane transport", replacement="tt"),
+                        pattern="amino acid", replacement="aa"),
+                    pattern="response", replacement="res."),
+                pattern="signaling pathway", replacement="sp"),
+            pattern="regulation", replacement="reg.")
+        )
+}
+ 
+Term.bis <- function(x) {
+    abbr(Term(x))
+}
+
+pwDesc <- function (x, desc.data = NULL) {
+    if (!is.null(desc.data)) {
+        return (sub(desc.data[x], pattern = " - Cricetulus griseus (Chinese hamster)", 
+                    replacement = "", fixed = T))
+    }
+    if (length(grep("^GO:", x)) == length(x)) {
+    	return (Term.bis(x))
+    }
+    if (length(grep("^GO:", x)) > 0) {
+        warning("Wrong format of GO ID found.")
+        return (rep("", length(x)))
+    }
+    if (!requireNamespace("KEGGREST", quietly = TRUE)) {
+        stop("Please install KEGGREST: source(\"https://bioconductor.org/biocLite.R\"); biocLite(\"KEGGREST\")")
+    }
+    return(sapply(x, function(xx) {
+        kegg.path <- tryCatch(KEGGREST::keggList(xx), error = function(e) {
+            ""
+        })
+        names(kegg.path) <- NULL
+        return (sub(kegg.path, pattern = " - Cricetulus griseus (Chinese hamster)", 
+            replacement = "", fixed = T))
+    }, USE.NAMES = T))
+}
+desc.data <- NULL
+
+
+## if (!file.exists(GO.WORLD)) {
+##     suppressPackageStartupMessages(library(org.Hs.eg.db))
+##     gofile <- paste0("GO.list.", package.version("org.Hs.eg.db"))
+##     genename      <- org.Hs.egENSEMBL2EG
+##     mapped_genes  <- mappedkeys(genename)
+##     genename.list <- as.list(genename[mapped_genes])
+##     genename      <- org.Hs.egGO
+##     mapped_genes  <- mappedkeys(genename)
+##     genego.list   <- as.list(genename[mapped_genes])
+##     if (ENSEMBL) {
+##         golist    <- do.call(rbind, mclapply(1L:length(genename.list), mc.cores=mc.cores, function(i) {
+##             c(names(genename.list)[i],
+##               paste(unique(unname(unlist(lapply(genename.list[[i]], function(gn) {
+##                   names(genego.list[[as.character(gn)]])
+##               })))), collapse=','),
+##               '')
+##         }))
+##     } else {
+##         golist    <- do.call(rbind, mclapply(1L:length(genego.list), mc.cores=mc.cores, function(i) {
+##             c(names(genego.list)[i],
+##               paste(unique(names(genego.list[[i]])), collapse=','),
+##               ''
+##               )
+##         }))
+##     }
+##     rm(genename)
+##     write.table(golist, file=gofile, sep='\t', quote=F, col.names=F, row.names=F)
+##     system(paste("ln -s", gofile, GO.WORLD, sep=' '))
+## }
+
+## import GO annotation from GO.WORLD file
+geneID2GO <- readMappings(file=GO.WORLD)
+GO2geneID <- inverseList(geneID2GO)
+gene.name <- names(geneID2GO)
+```
+
+```{r GSEA_R, eval=TRUE}
+    ##- GMT ----
+    gmt.dfs <- mclapply(GMTFILES, mc.cores=length(GMTFILES), function(gmtf) {
+        gmt.df      <- read.gmt(paste0(DIR, "/../data/download/", gmtf))
+        gmt.df$term  <- as.vector(gmt.df$term) #TODO: term instead of ont in read.gmt output
+        gmt.df$gene <- as.vector(gmt.df$gene)
+        gmt.df$term  <- gsub(gmt.df$term, pattern="\\+", replacement="PLUS")
+        gmt.df$term  <- gsub(gmt.df$term, pattern="'",   replacement="")
+        gmt.df$term  <- gsub(gmt.df$term, pattern="-| |\\.|\\(|\\)|/|,|:|>|=|#|\\[|\\]", replacement="_")
+        gmt.df$term  <- gsub(gmt.df$term, pattern="__", replacement="_")
+        gmt.df$term  <- paste0("GO_", toupper(gmt.df$term))
+        return (gmt.df)
+    })
+    ##-----
+
+    log2FC.conts <- grep("Log2FC", colnames(DE.df), value=T)
+    Ntermshowed <- 20
+    enrichedGMT <- lapply(log2FC.conts, function(cnt) {
+        print(cnt)
+        # ## consider gene name or uniprot id
+        # cnt.fc <- sort(setNames(DE.df[, cnt], if (PROTEIN) rownames(DE.df) else DE.df[, "name"]), decreasing=T)
+        # ##- max fc is used for repeated gene names ----
+        # dup.idx <- which(duplicated(names(cnt.fc)))
+        # cnt.fc.nodup <- cnt.fc
+        # if (length(dup.idx) > 0)
+        # cnt.fc.nodup <- cnt.fc.nodup[-dup.idx]
+        # for (x in unique(names(cnt.fc)[dup.idx]))
+        # cnt.fc.nodup[x] <- (cnt.fc[names(cnt.fc)==x])[which.max(abs(cnt.fc[names(cnt.fc)==x]))]
+        # cnt.fc.nodup <- sort(cnt.fc.nodup, decreasing=T)
+        # ##-----
+        
+        ##- signal-to-noise ratio ----
+        cond1 <- strsplit(cnt, split="_")[[1]][2]
+        cond2 <- strsplit(cnt, split="_")[[1]][4]
+        cellir <- sub(cnt, pattern=".*_in_", replacement='')
+        if (!grepl("_IR$", cellir)) cellir <- paste0(cellir, '_')
+        cnt.cond <- grep(paste0(cellir, "_", cond1), colnames(DE.df), value=T)
+        cnt.condref <- grep(paste0(cellir, "_", cond2), colnames(DE.df), value=T)
+        mean.cond    <- apply(DE.df[, cnt.cond], 1, mean)
+        mean.condref <- apply(DE.df[, cnt.condref], 1, mean)
+        sd.cond      <- apply(DE.df[, cnt.cond], 1, sd)
+        sd.condref   <- apply(DE.df[, cnt.condref], 1, sd)
+        meansd.df <- cbind(mean.cond, mean.condref, sd.cond, sd.condref)
+        cnt.signal2noise <- apply(meansd.df, 1, function(msd) {
+            if (msd[3] < 0.2*msd[1]) msd[3] <- 0.2*msd[1]
+            if (msd[4] < 0.2*msd[2]) msd[4] <- 0.2*msd[2]
+            return ((msd[1]-msd[2])/(msd[3]+msd[4]))
+        })
+        cnt.signal2noise[is.infinite(cnt.signal2noise)] <- 0
+        
+        ##- max signal2noise is used for repeated gene/uniprot names ----
+        dup.idx <- which(duplicated(names(cnt.signal2noise)))
+        cnt.signal2noise.nodup <- cnt.signal2noise
+        if (length(dup.idx) > 0)
+            cnt.signal2noise.nodup <- cnt.signal2noise.nodup[-dup.idx]
+        for (x in unique(names(cnt.signal2noise)[dup.idx]))
+            cnt.signal2noise.nodup[x] <- (cnt.signal2noise[names(cnt.signal2noise)==x])[which.max(abs(cnt.signal2noise[names(cnt.signal2noise)==x]))]
+        cnt.signal2noise.nodup <- sort(cnt.signal2noise.nodup, decreasing=T)
+        ##-----
+        
+        ## sort by signal2noise ratio
+        geneList <- cnt.signal2noise.nodup
+        
+        ##- GMT enrichment ----
+        ## NB. GSEA function cannot be run in parallel with seed = TRUE
+        egmts <- mclapply(gmt.dfs, mc.cores=1, function(gmt.df) {
+            term2name <- replicate(unique(gmt.df$term), n=2)
+            colnames(term2name) <- c("term", "name")
+            egmt <- GSEA(geneList      = geneList,
+                         TERM2GENE     = gmt.df,
+                         TERM2NAME     = term2name,
+                         #nPerm         = 1000,
+                         seed          = TRUE,
+                         eps           = 0,
+                         minGSSize     = 5,
+                         maxGSSize     = 500,
+                         pAdjustMethod = ADJUST.METHOD,
+                         pvalueCutoff  = 2,
+                         by            = "fgsea",
+                         verbose       = FALSE)
+            return (egmt)
+        })
+        names(egmts) <- names(gmt.dfs)
+        ##-----
+
+        return (list(egmts=egmts, signal2noise=cnt.signal2noise))
+    })
+    names(enrichedGMT) <- gsub(log2FC.conts, pattern="Log2FC_", replacement="")
+
+    signal2noise.mat <- do.call(cbind, mclapply(enrichedGMT, mc.cores = length(enrichedGMT), function(x) {
+        x$signal2noise
+    }))
+    colnames(signal2noise.mat) <- names(enrichedGMT)
+    write.table(signal2noise.mat, file=paste0(OUTDIR, 'signal2noise.tsv'), sep='\t', quote=F, col.names=NA)
+    ## write enriched GMT
+    sapply(names(enrichedGMT[[1]][[1]]), function(epath) {
+        enrichedGMTresult <- mclapply(enrichedGMT, mc.cores = length(enrichedGMT), function(x) {
+            attr(x$egmts[[epath]], "result")
+        })
+        resultgmts <- Reduce(union, mclapply(enrichedGMTresult, mc.cores = length(enrichedGMTresult), function(x) {
+            rownames(x)
+        }))
+        enrichedGMTresult.short <- do.call(cbind, mclapply(enrichedGMTresult, mc.cores = length(enrichedGMTresult), function(x) {
+            x[, "core_enrichment"] <- gsub(x[, "core_enrichment"], pattern = "/", replacement = ",")
+            return (data.frame(x[match(resultgmts, rownames(x)), c("setSize", "enrichmentScore", "NES", "pvalue", "p.adjust", "qvalues", "core_enrichment")],
+                               row.names=resultgmts,
+                               stringsAsFactors=F))
+        }))
+        enrichedGMTresult.order <- enrichedGMTresult.short[, unlist(lapply(c("setSize", "enrichmentScore", "NES", "pvalue", "p.adjust", "qvalues", "core_enrichment"), function(x) {
+            grep(x, colnames(enrichedGMTresult.short), value = T)
+        }))]
+        enrichedGMTresult.order <- cbind(Ontology=epath,
+                                         Description=apply(do.call(cbind, 
+                                                                   lapply(enrichedGMTresult, function(x) x[match(resultgmts, rownames(x)), "Description"])),
+                                                           1, function(xx) unique(na.omit(xx))),
+                                         enrichedGMTresult.order)
+        write.table(enrichedGMTresult.order, file = paste0(OUTDIR, epath, "_stat.tsv"), sep = "\t", quote = F, col.names = NA)
+    })
+
+```
+
+```{r GSEA_plot_generation, eval=FALSE, include=F}
+if (OUT %in% c("Bristol", "Helsinki")) {
+    gsea.conts <- list(all=c(
+                           "ABN__InsulinResistant_versus_ABN__Basal",
+                           "GEnC__InsulinResistant_versus_GEnC__Basal",
+                           "K29__InsulinResistant_versus_K29__Basal",
+                           "PT34__InsulinResistant_versus_PT34__Basal",
+                           "ABN_IR_InsulinResistant_versus_ABN_IR_Basal",
+                           "GEnC_IR_InsulinResistant_versus_GEnC_IR_Basal",
+                           "K29_IR_InsulinResistant_versus_K29_IR_Basal",
+                           "PT34_IR_InsulinResistant_versus_PT34_IR_Basal"))
+} else if (OUT=="Endothelial") {
+    gsea.conts <- list(all=names(gsea.GOs))
+}
+j <- 1
+invisible(assert_that(anyDuplicated(unlist(lapply(gsea.GOs[gsea.conts[[j]]], names)))==0, msg="Repeated names in GSEA contrasts"))
+gsea.GOs.list <- unlist(unname(gsea.GOs[gsea.conts[[j]]]), recursive=F)
+gsea.GOs.list.filtered <- mclapply(gsea.GOs.list, mc.cores=length(gsea.GOs.list), function(x) {
+    x <- x[x$p.Val < P.LIM & x$q.Val < Q.LIM,]
+    x <- x[order(x$p.Val), , drop=F]
+    rownames(x) <- x$ID
+    return (x)
+})
+gsea.commons.list <- invisible(lapply(unique(ide2), function(x.ir) {
+    lapply(levels(pathology), function(x.patho) {
+        x <- sapply(levels(cell), function(x.cell) {
+            paste(c(x.cell, x.ir, x.patho), collapse="_")
+        })
+        ids.union <- Reduce(union, lapply(gsea.GOs.list.filtered[x], function(y) y$ID))
+        vc <- vennCounts(do.call(cbind, lapply(gsea.GOs.list.filtered[x], function(y) ids.union %in% y$ID)))
+        pdf(paste0(OUTDIR, j, "_venn_", x.ir, "_", x.patho, ".pdf"), width=8, height=8)
+        vennDiagram(vc, counts.col="red", mar=rep(0,4), cex=c(3,2.5,2),
+                    names=sub(setdiff(colnames(vc), "Counts"), pattern=paste0("_", x.ir, "_", x.patho), replacement=""))
+        dev.off()
+        p.union <- do.call(cbind, lapply(gsea.GOs.list[x], function(y) y[ids.union, c("p.Val")]))
+        ##rownames(p.union) <- paste(ids.union, pwDesc(ids.union, desc.data), sep=' ')
+        rownames(p.union) <- ids.union
+        colnames(p.union) <- sub(colnames(p.union), pattern=paste0("_", x.ir, "_", x.patho), replacement="")
+        p.union[is.na(p.union)] <- 1
+        q.union <- do.call(cbind, lapply(gsea.GOs.list[x], function(y) y[ids.union, c("q.Val")]))
+        rownames(q.union) <- rownames(p.union)
+        q.union[is.na(q.union)] <- 1
+        colnames(q.union) <- sub(colnames(q.union), pattern=paste0("_", x.ir, "_", x.patho), replacement="")
+        hm <- Heatmap(p.union,
+                      name="GO term enrichment",
+                      color_space="RGB",
+                      cluster_columns=F,
+                      cluster_rows=T,
+                      clustering_distance_columns=DIST.METHOD,
+                      clustering_method_columns=HCLUST.METHOD,
+                      show_row_dend=F,
+                      row_names_side="right",
+                      column_names_gp=gpar(fontsize=12, angle=45),
+                      row_names_gp=gpar(fontsize=9),
+                      cell_fun=function(j, i, x, y, width, height, fill) {
+                                        #grid.text(sprintf("%.2f", q.union[i, j]), x, y, gp=gpar(fontsize=10))
+                          grid.text(ifelse(q.union[i, j] < Q.LIM, "*", ""), x, y-unit(0.15, "cm"), gp=gpar(fontsize=20))
+                      },
+                      col=colorRamp2(
+                          c(0, 0.05, 1),
+                          c("red", "ivory", "white"), space="RGB"),
+                      na_col="white",
+                      heatmap_legend_param=list(
+                          legend_direction="horizontal",
+                          legend_width=unit(5, "inch"),
+                          title="p-value",
+                          title_gp=gpar(fontsize=10, fontface='bold'),
+                          labels_gp=gpar(fontsize=10)),
+                      row_dend_width=unit(2, "cm"),
+                      width=unit(3, "inch"),
+                      heatmap_height=unit(max(2.5, nrow(p.union)/7), "inch")
+                      )
+        pdf(paste0(OUTDIR, j, "_GO_", x.ir, "_", x.patho, ".pdf"), width=11, height=max(3, nrow(p.union)/6))
+        draw(hm, heatmap_legend_side="top", padding=unit(c(1,-5,1,7), "cm"))
+        dev.off()
+        rm(hm)
+        
+        ids.intersect <- Reduce(intersect, lapply(gsea.GOs.list.filtered[x], function(y) y$ID))
+        if (length(ids.intersect) > 0)
+            ## return (cbind(Description=pwDesc(ids.intersect, desc.data),
+            ##               do.call(cbind, lapply(gsea.GOs.list.filtered[x], function(y) y[ids.intersect, c("Size", "p.Val", "q.Val")]))))
+            return (do.call(cbind, lapply(gsea.GOs.list.filtered[x], function(y) y[ids.intersect, c("Size", "p.Val", "q.Val")])))
+        else
+            return (NULL)
+    })
+}))
+```
+   
+```{r, eval=FALSE, fig.pos='p', out.width="60%", fig.cap="Number of upregulated GO biological processes in Basal"}
+include_graphics(paste0(OUTDIR, "1_venn__Basal.pdf"))
+```
+
+```{r, eval=FALSE, fig.pos='p', out.width="\\textwidth", fig.cap="Significant GO biological processes upregulated in Basal"}
+include_graphics(paste0(OUTDIR, "1_GO__Basal.pdf"))
+```
+
+```{r, eval=FALSE, fig.pos='p', out.width="60%", fig.cap="Number of upregulated GO biological processes in InsulinResistant"}
+include_graphics(paste0(OUTDIR, "1_venn__InsulinResistant.pdf"))
+```
+
+```{r, eval=FALSE, fig.pos='p', out.width="\\textwidth", fig.cap="Significant GO biological processes upregulated in InsulinResistant"}
+include_graphics(paste0(OUTDIR, "1_GO__InsulinResistant.pdf"))
+```
+
+```{r, eval=FALSE, fig.pos='p', out.width="60%", fig.cap="Number of upregulated GO biological processes in IR Basal"}
+include_graphics(paste0(OUTDIR, "1_venn_IR_Basal.pdf"))
+```
+
+```{r, eval=FALSE, fig.pos='p', out.width="\\textwidth", fig.cap="Significant GO biological processes upregulated in IR Basal"}
+include_graphics(paste0(OUTDIR, "1_GO_IR_Basal.pdf"))
+```
+
+```{r, eval=FALSE, fig.pos='p', out.width="60%", fig.cap="Number of upregulated GO biological processes in IR InsulinResistant"}
+include_graphics(paste0(OUTDIR, "1_venn_IR_InsulinResistant.pdf"))
+```
+
+```{r, eval=FALSE, fig.pos='p', out.width="\\textwidth", fig.cap="Significant GO biological processes upregulated in IR InsulinResistant"}
+include_graphics(paste0(OUTDIR, "1_GO_IR_InsulinResistant.pdf"))
+```
+
+\newpage
+	
+```{r common_go_table, eval=FALSE, results='asis'}
+gsea.commons <- unlist(gsea.commons.list, recursive=F)
+for (i in 1:length(gsea.commons)) {
+    if (!is.null(gsea.commons[[i]])) {
+        gsea.commons.i <- gsea.commons[[i]][, -c(grep("Size", colnames(gsea.commons[[i]]))[-1])]
+        cond.i <- sub(sub(grep("Size", colnames(gsea.commons.i), value=T),
+                              pattern=".Size", replacement=""),
+                          pattern="^[A-Z]+_+", replacement="", perl=T)
+                      
+        colnames(gsea.commons.i) <- gsub(colnames(gsea.commons.i), pattern=paste0("_+", cond.i), replacement="")
+        colnames(gsea.commons.i)[1] <- "Size"
+        gsea.commons.cells <- unname(sapply(grep(".p.Val", colnames(gsea.commons.i), value=T), function(x) {
+            sub(x, pattern='.p.Val', replacement='')
+        }))
+        header.above <- sapply(gsea.commons.cells, function(x) {
+            length(grep(x, colnames(gsea.commons.i)))
+        }, USE.NAMES=TRUE)
+        for (cl in gsea.commons.cells) {
+            colnames(gsea.commons.i) <- sub(colnames(gsea.commons.i), pattern=paste0(cl, "."), replacement='')
+        }
+        ## NB: _ in caption causes a wrong rendering to tex file.
+        print(kable(gsea.commons.i, row.names=T, format="latex", booktabs=T, longtable=TRUE,
+                    caption=paste0("Common GO biological processes upregulated in ", sub(cond.i, pattern="_", replacement=" ")))
+              %>% column_spec(1, width="8cm")
+              %>% add_header_above(c("", "", header.above))
+              %>% kable_styling(font_size=5, latex_options=c("repeat_header")))
+                                        # %>% column_spec(3:8, width="1cm")
+    }
+}
+
+```
+
+\newpage
+
+```{r session_info, eval=TRUE}
+sessionInfo()
+```
+
