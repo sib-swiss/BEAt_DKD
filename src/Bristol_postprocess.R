@@ -1,16 +1,14 @@
 ##- settings ----
 rm(list=ls())
-LIBRARIES <- c("clusterProfiler",
-               "ggplot2", "reshape2", "gridExtra", "gtable", "ggpubr", "ggVennDiagram",
-               "assertthat", "parallel"
-)
+LIBRARIES <- c("clusterProfiler", "ggrepel", "ggplot2", "reshape2",
+               "gridExtra", "gtable", "ggpubr", "ggVennDiagram",
+               "assertthat", "parallel")
 invisible(sapply(LIBRARIES, function(lib) {
     suppressPackageStartupMessages(library(lib, character.only = TRUE))
 }))
 options(stringsAsFactors=F)
 
-#DIR <- '/db/scratch/ttran/BEAt_DKD/limma'
-DIR <- '~/Work/BEAtDKD_analysis'
+DIR <- getwd() # working directory containing README.md
 ADJUST.METHOD <- 'BH'
 GENEID <- file.path(DIR, "genes.id.txt")
 FDR <- 0.05
@@ -214,9 +212,9 @@ ag <- ggarrange(plotlist=c(unlist(omics.pca.plots.all, recursive = F))[c(1,3,2,4
                 # font.label=list(size=40, face='bold'),
                 # label.y=1.02,
                 common.legend=T, ncol=2, nrow=2)
-ggsave(ag, filename="Fig2AB.pdf", width=12, height=12)
+ggsave(ag, filename="Fig2A.pdf", width=12, height=12)
 
-proteomics.info <- t(read.table("db/proteomics/Scaled.tsv", header=F, sep='\t', quote="", nrows=1)[1, -1])
+proteomics.info <- t(read.table(file.path(DIR, "data/clean/proteomics/Scaled.tsv"), header=F, sep='\t', quote="", nrows=1)[1, -1])
 rownames(proteomics.info) <- proteomics.info %>% gsub("^F._[0-9A-Z]+_", "", .)
 rownames(proteomics.info) <- rownames(proteomics.info) %>% paste0(., "_",.) %>% gsub("_[0-9]+_", "_", .)
 proteomics.info <- data.frame(sample=proteomics.info[,1], 
@@ -325,7 +323,7 @@ regulated.df <- do.call(rbind, lapply(dirs, function(x) {
     }), c("Log2FC > 0", "Log2FC > 1")))
 
     return (df)
-})) #TO REMOVE
+})) # for individual cell types
 
 regulated.df <- do.call(rbind, lapply(dirs.all, function(x) {
     tab <- read.table(paste0(x, '/1_DE.tsv'), header=T, sep='\t', quote="")
@@ -403,7 +401,7 @@ p <- ggplot(regulated.df, aes(x=Cond, y=Stack, fill=interaction(Regulation, Cuto
 p <- p + geom_bar(width=0.6, position="stack", stat="identity") +
     geom_hline(yintercept=0, color="white") +
     scale_fill_manual(name="", values=unname(colors), labels=names(colors))
-ggsave(p, filename='Fig2CD.pdf', width=12, height=6.1)
+ggsave(p, filename='Fig2B.pdf', width=12, height=6.1)
 ##-----
 
 ##- Volcano plots ----
@@ -420,9 +418,9 @@ volcano.list <- unlist(setNames(mclapply(dirs, mc.cores=length(dirs), function(x
         colnames(mat) <- c("Contrast", 'ID', "Log2FC", "FDR")
         return (mat)
     }), const)
-}), dirs), recursive = F)
+}), dirs), recursive = F) # for individual cell types
 
-volcano.list <- unlist(setNames(mclapply(dirs.all, mc.cores=length(dirs), function(x) {
+volcano.list <- unlist(setNames(mclapply(dirs.all, mc.cores=length(dirs.all), function(x) {
     tab <- read.table(paste0(x, '/1_DE.tsv'), header=T, sep='\t', quote="", row.names=1)
     const <- sub(grep("^FDR_", colnames(tab), value=T), pattern='^FDR_', replacement='')
     setNames(lapply(const, function(cnt) {
@@ -445,7 +443,7 @@ volcano.df$Omics <- volcano.df$Contrast %>%
     gsub("allall_.+|IR_.+|_.+", "", .) %>% 
     factor(., levels=c("RNAseq", "Prot"))
 volcano.df$Cond <- paste0(volcano.df$Cell, ifelse(volcano.df$IR=="IR", "_", ""), volcano.df$IR)
-volcano.df$Cond <- factor(volcano.df$Cond, levels=sort(unique(volcano.df$Cond)))
+volcano.df$Cond <- factor(volcano.df$Cond, levels=c("Pod_IR", "GEC_IR", "MC_IR", "PTC_IR"))
 
 volcano.df$sig <- factor(ifelse(volcano.df$FDR < FDR,
                                 ifelse(volcano.df$Log2FC > 1, 
@@ -458,7 +456,7 @@ volcano.df$sig <- factor(ifelse(volcano.df$FDR < FDR,
                                 "grey70"),
                          levels=c(colors, "grey70"))
 
-# Fig2F volcano plot for RNA-seq
+# Fig2C volcano plot for RNA-seq
 volcano.df.plot <- volcano.df[volcano.df$IR=="IR" & volcano.df$Omics=="RNAseq",]
 p <- ggplot(volcano.df.plot, 
             aes(x=Log2FC, y=-log10(FDR), colour=sig)) +
@@ -482,9 +480,9 @@ p <- ggplot(volcano.df.plot,
           axis.title      = element_text(size=16),
           axis.text       = element_text(size=16)
     )
-ggsave(p, file='Fig2E.pdf', width=12, height=12)
+ggsave(p, file='Fig2C.pdf', width=12, height=12)
 
-# Fig2F volcano plot for proteomics
+# Fig2D volcano plot for proteomics
 volcano.df.plot <- volcano.df[volcano.df$IR=="IR" & volcano.df$Omics=="Prot",]
 p <- ggplot(volcano.df.plot, 
             aes(x=Log2FC, y=-log10(FDR), colour=sig)) +
@@ -508,10 +506,10 @@ p <- ggplot(volcano.df.plot,
           axis.title      = element_text(size=16),
           axis.text       = element_text(size=16)
     )
-ggsave(p, file='Fig2F.pdf', width=12, height=12)
+ggsave(p, file='Fig2D.pdf', width=12, height=12)
 ##-----
 
-##- Venn diagrams ----
+##- Fig2E Venn diagrams ----
 venn.plots <- lapply(levels(volcano.df$Omics), function(const) {
     venn.df <- volcano.df[volcano.df$Omics==const & volcano.df$IR=="IR",]
     venn.plot <- lapply(c("Log2FC < 0", "Log2FC > 0"), function(reg) {
@@ -537,7 +535,7 @@ ag <- ggarrange(plotlist=unlist(venn.plots, recursive = F),
                 # label.y=1.1,
                 common.legend=T,
                 ncol=2, nrow=2)
-ggsave(ag, filename=paste0('Venn_log2FC0.pdf'), width=12, height=10)
+ggsave(ag, filename=paste0('Fig2E.pdf'), width=12, height=10)
 
 venn.plots <- lapply(levels(volcano.df$Omics), function(const) {
     venn.df <- volcano.df[volcano.df$Omics==const & volcano.df$IR=="IR",]
@@ -984,177 +982,3 @@ invisible(sapply(gmt.types, function(epath) {
 ##-----
 #save(enrpathways, file="enrpathways.RData")
 
-
-##- IR Bristol ----
-irgene <- "INSR"
-irdirs <- c("BristolallIR", "ProtallIR")
-irdirs <- dirs
-
-## INSR related genes
-irstring <- rownames(symbol.string[symbol.string$symbol %in% irgene,,drop=F]) # i.e. c("9606.ENSP00000303830")
-ircluster <- cluster2prot[cluster2prot$protein_id %in% irstring, 1]
-ircluster.plot <- cluster.relation[setdiff(ircluster, cluster.relation[ircluster,]),]
-ircluster.proteins <- cluster2prot[cluster2prot$cluster_id %in% ircluster.plot, 2]
-ircluster.genes <- symbol.string[ircluster.proteins,]
-paste(ircluster.proteins, collapse="','")
-
-
-ir.dfs <- as.data.frame(t(sapply(irdirs, function(x) {
-    DE.df <- read.table(paste0(x, '/1_DE.tsv'), header=T, sep='\t', quote="")
-    ir.df <- DE.df[DE.df$name %in% ircluster.genes, , drop=F]
-    rownames(ir.df) <- ir.df$name
-    ir.df <- ir.df[, -c(1:2), drop=F]
-    ## heatmap
-    invisible(sapply(c('row', 'column', 'none'), function(scaletype) {
-        pdf(paste0(x, '_irgenes_', scaletype, '.pdf'))
-        par(mfrow=c(1,2))
-        heatmap.2(as.matrix(ir.df[, -c(grep("versus", colnames(ir.df)), ncol(ir.df))]),
-                  scale=scaletype,
-                  main="STRINGdb cluster of INSR", symbreaks=F, symkey=F, trace='none', margin=c(20,10))
-        heatmap.2(as.matrix(ir.df[, grep("Log2FC", colnames(ir.df))]),
-                  scale=scaletype, cexCol = 0.8,
-                  main="STRINGdb cluster of INSR", symbreaks=F, symkey=F, trace='none', margin=c(20,10))
-        dev.off()
-    }))
-    ## boxplot
-    lapply(rownames(ir.df), function(y) {
-        irbox.df <- data.frame(count=ir.df[y, ], 
-                            exp.design[colnames(counts.norm.log), c("sample", "cond", "cell", "color", "group")], 
-                            stringsAsFactors=F)
-    })
-})))
-
-
-## regression: DE gene number ~ INSR level 
-ir.df <- as.data.frame(t(sapply(dirs[!grepl("Lund", dirs)], function(x) {
-    tab <- read.table(paste0(x, '/DE.tsv'), header=T, sep='\t', quote="")
-    
-    return (c(log2FC=tab[tab$name %in% irgene, grep("^Log2FC", colnames(tab))],
-              corIB=mean(cor(tab[, grepl("Basal", colnames(tab)) & !grepl("versus", colnames(tab))], tab[, grepl("InsulinResistant", colnames(tab)) & !grepl("versus", colnames(tab))])),
-              Basal=mean(2^as.numeric(tab[tab$name %in% irgene, grepl("Basal", colnames(tab)) & !grepl("versus", colnames(tab))])),
-              InsulinResistant=mean(2^as.numeric(tab[tab$name %in% irgene, grepl("InsulinResistant", colnames(tab)) & !grepl("versus", colnames(tab))]))))
-})))
-
-ir.df$mean <- (ir.df$Basal + ir.df$InsulinResistant)/2
-ir.df$Basal <- log2(ir.df$Basal)
-ir.df$InsulinResistant <- log2(ir.df$InsulinResistant)
-ir.df$mean <- log2(ir.df$mean)
-ir.df$IR <- factor(ifelse(grepl("IR$", rownames(ir.df)), "IR", "noIR"))
-rownames(ir.df) <- gsub(rownames(ir.df), pattern="^Bristol|^Lund", replacement="RNAseq")
-ir.df$numDEs <- log2(numDEs[rownames(ir.df)] + 1)
-ir.df$cell <- factor(gsub(rownames(ir.df), pattern="RNAseq|Exosome|Prot|IR$", replacement=""))
-ir.df$type <- factor(ifelse(grepl("RNAseq", rownames(ir.df)),
-                            "RNAseq",
-                            ifelse(grepl("Exosome", rownames(ir.df)), "Exosome", "Prot")),
-                     levels=c("RNAseq", "Prot", "Exosome"))
-
-ps <- list(p1=ggplot(ir.df, aes(x=Basal, y=InsulinResistant)) + 
-               xlab("log2(mean counts) INSR in Basal") + 
-               ylab("log2(mean counts) INSR in InsulinResistant") + 
-               geom_smooth(method='lm'),
-           p2=ggplot(ir.df, aes(x=Basal, y=numDEs)) + 
-               xlab("log2(mean counts) INSR in Basal") + 
-               ylab("log2(1 + # DE genes)"),
-           p3=ggplot(ir.df, aes(x=InsulinResistant, y=numDEs)) +
-               xlab("log2(mean counts) INSR in InsulinResistant") + 
-               ylab("log2(1 + # DE genes)"),
-           p4=ggplot(ir.df, aes(x=mean, y=numDEs)) + 
-               xlab("log2(mean counts) INSR") + 
-               ylab("log2(1 + # DE genes)"),
-           # p5=ggplot(ir.df, aes(x=log2FC, y=numDEs)) +
-           #     xlab("log2FC INSR InsulinResistant vs Basal") +
-           #     ylab("log2(1 + # DE genes)"),
-           p6=ggplot(ir.df, aes(x=Basal, y=corIB)) + 
-               xlab("log2(mean counts) INSR in Basal") + 
-               ylab("cor(InsulinResistant, Basal)"),
-           p7=ggplot(ir.df, aes(x=InsulinResistant, y=corIB)) +
-               xlab("log2(mean counts) INSR in InsulinResistant") + 
-               ylab("cor(InsulinResistant, Basal)"),
-           p8=ggplot(ir.df, aes(x=mean, y=corIB)) + 
-               xlab("log2(mean counts) INSR") + 
-               ylab("cor(InsulinResistant, Basal)")
-           # p9=ggplot(ir.df, aes(x=log2FC, y=corIB)) +
-           #     xlab("log2FC INSR InsulinResistant vs Basal") +
-           #     ylab("cor(InsulinResistant, Basal)")
-)
-ps <- lapply(ps, function(p) {
-    p <- p + geom_point(aes(colour=cell, shape=type, alpha=IR, size=IR)) +
-        scale_color_manual(values = COLORGROUPS[["BEAtDKDcell"]][levels(ir.df$cell)], guide=guide_legend(title.position='top', nrow=2)) +
-        scale_size_manual(values=c(4,6)) + 
-        scale_alpha_manual(values=c(0.4, 1)) +
-        theme_bw() +
-        theme(title           = element_text(size=12, face='bold'),
-              legend.text     = element_text(size=10),
-              legend.position = "none",
-              axis.text       = element_text(size=12))
-    return (p)
-})
-pl <- ggplot(ir.df, aes(x=Basal, y=InsulinResistant, colour=cell, shape=type, alpha=IR, size=IR)) +
-    geom_point() + 
-    scale_color_manual(values = COLORGROUPS[["BEAtDKDcell"]][levels(ir.df$cell)]) +
-    scale_size_manual(values=c(4,6)) + 
-    scale_alpha_manual(values=c(0.4, 1))
-
-legend <- gtable_filter(ggplot_gtable(ggplot_build(pl + theme(legend.position = "right", legend.text=element_text(size=16)))), "guide-box")
-#ps[8] <- list(legend)
-#ag <- grid.arrange(grobs=ps, layout_matrix=rbind(c(1:4), c(9, 5:7)))
-ag <- arrangeGrob(ps[[1]], ps[[2]], ps[[3]], ps[[4]], legend, ps[[5]], ps[[6]], ps[[7]], layout_matrix=rbind(c(1:4), c(5:8)))
-ggsave(ag, filename="IR.pdf", width=22, height=11)
-
-## correlation on replicate pairwise
-ircor.df <- as.data.frame(do.call(rbind, lapply(dirs[!grepl("Lund", dirs)], function(x) {
-    tab <- read.table(paste0(x, '/DE.tsv'), header=T, sep='\t', quote="")
-    eg <- expand.grid(colnames(tab)[grepl("Basal", colnames(tab)) & !grepl("versus", colnames(tab))], colnames(tab)[grepl("InsulinResistant", colnames(tab)) & !grepl("versus", colnames(tab))])
-    res <- apply(eg, 1, function(y) {
-        c(dir=x, 
-          meanIR=log2(mean(2^as.numeric(tab[tab$name %in% irgene, y]))),
-          minIR=log2(min(2^as.numeric(tab[tab$name %in% irgene, y]))), 
-          maxIR=log2(max(2^as.numeric(tab[tab$name %in% irgene, y]))),
-          cor=cor(tab[, y[1]], tab[, y[2]]))
-    })
-    return (t(res))
-})))
-ircor.df$dir <- gsub(ircor.df$dir, pattern="^Bristol|^Lund", replacement="RNAseq")
-ircor.df$IR <- factor(ifelse(grepl("IR$", ircor.df$dir), "IR", "noIR"))
-ircor.df$cell <- factor(gsub(ircor.df$dir, pattern="RNAseq|Exosome|Prot|IR$", replacement=""))
-ircor.df$type <- factor(ifelse(grepl("RNAseq", ircor.df$dir),
-                               "RNAseq",
-                               ifelse(grepl("Exosome", ircor.df$dir), "Exosome", "Prot")),
-                        levels=c("RNAseq", "Prot", "Exosome"))
-ircor.df[, c("meanIR", "minIR", "maxIR", "cor")] <- apply(ircor.df[, c("meanIR", "minIR", "maxIR", "cor")], c(1,2), as.numeric)
-p <- ggplot(ircor.df, aes(x=meanIR, y=cor)) + 
-    geom_point(aes(color=cell, shape=type, alpha=IR, size=IR)) + 
-    scale_color_manual(values = COLORGROUPS[["BEAtDKDcell"]][levels(ir.df$cell)]) +
-    scale_size_manual(values=c(2.1,3.2)) + 
-    scale_alpha_manual(values=c(0.4, 1)) +
-    xlab("log2(mean counts) INSR") +
-    ylab("cor(InsulinResistant, Basal)") +
-    theme_bw() +
-    theme(title           = element_text(size=12, face='bold'),
-          legend.text     = element_text(size=10),
-          legend.position = "right",
-          axis.text       = element_text(size=10))
-ggsave(p, filename="IRcor.pdf", width=12, height=8)
-
-fit.RNAseq <- lm(cor~meanIR, data=ircor.df, subset = grep("RNAseq", ircor.df$type))
-fit.Prot <- lm(cor~meanIR, data=ircor.df, subset = grep("Prot", ircor.df$type))
-fit.Exosome <- lm(cor~meanIR, data=ircor.df, subset = grep("Exosome", ircor.df$type))
-fit.RNAseq
-fit.Prot
-fit.Exosome
-
-opar <- par(mfrow = c(2,2), oma = c(0, 0, 1.1, 0))
-plot(fit.RNAseq, las = 1)      # Residuals, Fitted, ...
-par(opar)
-opar <- par(mfrow = c(2,2), oma = c(0, 0, 1.1, 0))
-plot(fit.Prot, las = 1)      # Residuals, Fitted, ...
-par(opar)
-opar <- par(mfrow = c(2,2), oma = c(0, 0, 1.1, 0))
-plot(fit.Exosome, las = 1)      # Residuals, Fitted, ...
-par(opar)
-
-sapply(levels(ircor.df$type), function (x) {
-    t.test(ircor.df[ircor.df$type==x & ircor.df$IR=="IR", "cor"], ircor.df[ircor.df$type==x & ircor.df$IR=="noIR", "cor"],
-           alternative = "less")
-})
-##-----

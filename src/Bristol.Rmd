@@ -14,13 +14,12 @@ toc: yes
 ---
 
 ---
-# module add Development/java/1.8.0_192; nohup Rscript -e 'library(rmarkdown); library(knitr); PROJECT <- "BEAt_DKD"; OUT <- "Endothelial"; OMICS <- "RNAseq"; CELL <- "HMEC"; IR <- ""; FORCE <- FALSE; CONTRASTFILE <- paste0(OUT, "_contrasts.cfg"); DESIGNFILE <- paste0(OUT, "_design.cfg"); COUNTFILE <- ifelse(OMICS=="Prot", paste0("../data/clean/proteomics/", ifelse(OUT=="Endothelial", ifelse(CELL=="GEnC", "Bristol", "Lund"), OUT), "/Scaled.tsv"), NA); ADJUSTALL <- TRUE; FDR <- 0.05; LOGFC <- 1; GENEANNOTFILE <- ifelse(OMICS=="Prot", NA, NA); GENESUB <- ifelse(OMICS!="RNAseq", "all", "all"); render("~/devel/RNAseq_analysis/limma.Rmd", output_dir=paste0("output/", OUT, "/", OMICS, CELL, IR, "/"), output_file="report.pdf", clean=T);'#protein_coding
-#HMEC+ECFCold: data=120118
+# module add Development/java/1.8.0_192; nohup Rscript -e 'library(rmarkdown); library(knitr); PROJECT <- "BEAt_DKD"; OUT <- "Endothelial"; OMICS <- "RNAseq"; CELL <- "HMEC"; IR <- ""; FORCE <- FALSE; CONTRASTFILE <- paste0(OUT, "_contrasts.cfg"); DESIGNFILE <- paste0(OUT, "_design.cfg"); COUNTFILE <- ifelse(OMICS=="Prot", paste0("../data/clean/proteomics/", ifelse(OUT=="Endothelial", ifelse(CELL=="GEnC", "Bristol", "Lund"), OUT), "/Scaled.tsv"), NA); ADJUSTALL <- TRUE; FDR <- 0.05; LOGFC <- 1; GENEANNOTFILE <- ifelse(OMICS=="Prot", NA, NA); GENESUB <- ifelse(OMICS!="RNAseq", "all", "all"); render("~/devel/RNAseq_analysis/limma.Rmd", output_dir=paste0("output/", OUT, "/", OMICS, CELL, IR, "/"), output_file="report.pdf", clean=T);'
 ---
 
 ```{r global_options, include=FALSE}
-DIR <- paste0("/scratch/local/permanent/ttran/", PROJECT, "/limma/")
-OUTDIR <- paste0(DIR, 'output/', OUT, '/', OMICS, CELL, IR, '/')
+DIR <- getwd() # working directory containing README.md
+OUTDIR <- paste0(DIR, '/output/', OUT, '/', OMICS, CELL, IR, '/')
 dir.create(OUTDIR, recursive=T)
 opts_knit$set(
     root.dir = DIR,
@@ -118,7 +117,7 @@ FDR            <- as.numeric(FDR)
 CPM            <- as.numeric(CPM)
 P.LIM          <- 0.01
 Q.LIM          <- 0.05
-source("~/devel/RNAseq_analysis/limma_func.R")
+source("src/misc_func.R")
 ```
    
 # Experimental design
@@ -984,7 +983,7 @@ if (OUT %in% c("Helsinki", "Helsinki_Basal", "Endothelial") && OMICS %in% c("Pro
 ##-- fit$Amean is the average of counts.norm.log
 
 ## contrast matrix
-conts <- loadContrasts(CONTRASTFILE, "-")
+#conts <- loadContrasts(CONTRASTFILE, "-")
 
 if (IDE.DESIGN) {
     if (CELL=="all") {

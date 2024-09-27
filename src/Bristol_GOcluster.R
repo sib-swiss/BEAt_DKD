@@ -4,7 +4,7 @@ FIRSTRUN <- FALSE
 if (FIRSTRUN) {
     options(stringsAsFactors = F)
     rm(list=ls())
-    DIR <- '/scratch/local/permanent/ttran/BEAt_DKD/'
+    DIR <- getwd() # working directory containing README.md
     setwd(paste0(DIR, '/data/'))
     
     ## gmt downloaded from MSigDB
@@ -58,9 +58,8 @@ invisible(sapply(LIBRARIES, function(lib) {
 
 options(stringsAsFactors = F)
 rm(list=ls())
-DIR <- '/scratch/local/permanent/ttran/BEAt_DKD/'
-#DIR <- '~/Work/BEAt-DKD/'
-PROJECT <- "Endothelial"
+DIR <- getwd() # working directory containing README.md
+PROJECT <- "Bristol"
 font.size <- 12
 GOSIZELIM <- 500
 PLIM <- 0.05
@@ -96,7 +95,7 @@ if (PROJECT %in% c("Bristol", "Helsinki", "Helsinki_Basal")) {
 if (PROJECT %in% c("Bristol", "Helsinki")) {
     ############################################
     ## GO clustering
-    setwd(paste0(DIR, '/limma/output/', PROJECT, '/pathway_combined'))
+    setwd(paste0(DIR, '/output/', PROJECT, '/pathway_combined'))
     #setwd('~/Work/BEAt-DKD/Pathway_enrichment/')
     enrfiles <- grep("^GO_.+withOPLS_stat.tsv", list.files(), value=T)
     
@@ -316,7 +315,7 @@ if (PROJECT %in% c("Bristol", "Helsinki")) {
 } else if (PROJECT %in% c("Helsinki_Basal")) {
     ############################################
     ## EV cell-type enriched
-    setwd(paste0(DIR, '/limma/output/', PROJECT, '/pathway_combined'))
+    setwd(paste0(DIR, '/output/', PROJECT, '/pathway_combined'))
     enrfiles <- grep("^GO_.+_stat.tsv", list.files(), value=T)
     #' param filtering List of index vectors of the same length
     #' param filtering.lim Vector of limits, with the same length as filtering vectors
@@ -502,7 +501,7 @@ if (PROJECT %in% c("Bristol", "Helsinki")) {
 } else if (PROJECT %in% c("Lund")) {
     ############################################
     ## GO clustering
-    setwd(paste0(DIR, '/limma/output/', PROJECT, '/pathway_combined'))
+    setwd(paste0(DIR, '/output/', PROJECT, '/pathway_combined'))
     #setwd('~/Work/BEAt-DKD/Pathway_enrichment/')
     enrfiles <- grep("^GO_.+withOPLS_stat.tsv", list.files(), value=T)
     
@@ -660,7 +659,7 @@ if (PROJECT %in% c("Bristol", "Helsinki")) {
 } else if (PROJECT %in% c("Endothelial")) {
     ############################################
     ## GO clustering
-    setwd(paste0(DIR, '/limma/output/', PROJECT, '/pathway_combined'))
+    setwd(paste0(DIR, '/output/', PROJECT, '/pathway_combined'))
     #setwd('~/Work/BEAt-DKD/output/Endothelial/pathway_combined/')
     enrfiles <- grep("^GO_.+withOPLS_stat.tsv", list.files(), value=T)
     FUNCTIONASSAY <- TRUE
